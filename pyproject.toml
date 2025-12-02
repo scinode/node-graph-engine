@@ -1,0 +1,97 @@
+[build-system]
+requires = ["flit_core >=3.2"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "node_graph_engine"
+dynamic = ["version"]  # read from node_graph_engine/__init__.py
+description = "Create node-based workflow"
+authors = [{ name = "Xing Wang", email = "xingwang1991@gmail.com" }]
+readme = "README.md"
+license = {file = "LICENSE"}
+keywords = ["graph", "workflows"]
+requires-python = ">=3.9"
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering"
+]
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "cloudpickle",
+    "node-graph~=0.5.0",
+    "node-graph-widget",
+    "wrapt",
+    "typing_extensions>=4.7; python_version < '3.11'",
+    "aiida-core~=2.7",
+    "aiida-pythonjob~=0.4.8",
+]
+
+[project.urls]
+Documentation = "https://node-graph.readthedocs.io"
+Source = "https://github.com/scinode/node-graph"
+
+
+[project.optional-dependencies]
+docs = [
+    "sphinx_rtd_theme",
+    "sphinx~=7.2",
+    "nbsphinx",
+]
+pre-commit = [
+    "pre-commit~=2.2",
+    "pylint~=2.17.4",
+]
+tests = [
+    "pytest~=7.0",
+    "pytest-cov~=2.7,<2.11",
+]
+celery = [
+    "celery~=5.3",
+    "redis>=4.5,<6",
+]
+dask = [
+    "dask~=2024.5",
+]
+prefect = [
+    "prefect~=3.4",
+]
+parsl = [
+    "parsl==2025.10.6",
+]
+executorlib = [
+    "executorlib~=1.7",
+]
+redun = [
+    "redun~=0.32",
+]
+jobflow = [
+    "jobflow~=0.2",
+]
+airflow = [
+    "apache-airflow~=3.1",
+]
+dagster = [
+    "dagster~=1.7",
+]
+engines = [
+    "prefect~=3.4",
+    "parsl==2025.10.6",
+    "executorlib~=1.7",
+    "redun~=0.32",
+    "jobflow~=0.2",
+    "apache-airflow~=3.1",
+    "dagster~=1.7",
+    "dask~=2024.5",
+    "celery~=5.3",
+    "redis>=4.5,<6",
+]

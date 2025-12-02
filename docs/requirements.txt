@@ -1,0 +1,7 @@
+ipykernel
+sphinx_rtd_theme
+nbsphinx
+furo
+sphinx-design
+sphinx_gallery
+matplotlib
