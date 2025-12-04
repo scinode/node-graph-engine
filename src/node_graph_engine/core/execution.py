@@ -16,7 +16,6 @@ from aiida_pythonjob.calculations.pyfunction import PyFunction
 from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
 from aiida_pythonjob.data.serializer import all_serializers
 from aiida_pythonjob.parsers.utils import parse_outputs
-from aiida_pythonjob.utils import serialize_ports
 from node_graph import Graph, task
 from node_graph.executor import RuntimeExecutor
 from node_graph.graph import BUILTIN_TASKS
@@ -87,27 +86,19 @@ def prepare_graph_run(
     user: Optional[orm.User] = None,
     encode_graph_inputs: bool = False,
 ) -> GraphRunContext:
+    from node_graph_engine.orm.node_graph import NodeGraphNode
+    from .utils import save_nodegraph_data
     order, incoming, required = _scan_links_topology(ng)
     parent_node = orm.load_node(parent_pid) if parent_pid else None
     workflow_kwargs = {"user": user} if user is not None else {}
-    process_node = orm.WorkflowNode(**workflow_kwargs)
+    process_node = NodeGraphNode(**workflow_kwargs)
     if parent_node is not None:
         process_node.base.links.add_incoming(
             parent_node, LinkType.CALL_WORK, link_label=ng.name
         )
     process_node.set_process_label(f"Graph<{ng.name}>")
     process_node.set_process_state(ProcessState.RUNNING)
-    graph_data = ng.to_dict(include_sockets=True, should_serialize=True)
-    process_node.set_checkpoint(serialize(graph_data))
-    inputs = ng.inputs._collect_values(raw=True)
-    serialize_kwargs = {
-        "python_data": inputs,
-        "port_schema": ng.spec.inputs,
-    }
-    if user is not None:
-        serialize_kwargs["user"] = user
-    inputs = serialize_ports(**serialize_kwargs)
-    setup_inputs(process_node, inputs)
+    inputs = save_nodegraph_data(process_node, ng, user)
     process_node.store()
     values_payload: Dict[str, Any]
     if encode_graph_inputs:

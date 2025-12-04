@@ -19,6 +19,7 @@ from ..core.utils import (
     close_threadlocal_aiida_session,
     update_nested_dict_with_special_keys,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 from aiida import orm
 
 
@@ -123,6 +124,12 @@ class LocalEngine(BaseEngine):
             finalize_pending_semantics(
                 context.process_node, context.ng, success=success
             )
+            if success:
+                persist_workflow_knowledge_graph(
+                    process_node=context.process_node,
+                    graph=context.ng,
+                    engine_kind=self.engine_kind,
+                )
             context.process_node.seal()
 
     def _build_task_executor(
