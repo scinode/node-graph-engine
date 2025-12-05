@@ -4,7 +4,7 @@ from aiida import orm
 from node_graph import task
 from node_graph.socket_spec import meta
 from node_graph.semantics import SemanticTag
-from node_graph.semantics import attach_semantics
+from node_graph.semantics import attach_semantics, attribute_ref
 from node_graph_engine.engines.local import LocalEngine
 from typing import Annotated, Dict, List
 
@@ -129,6 +129,32 @@ def test_socket_semantics_roundtrip() -> None:
 
     workflow_node = orm.load_node(engine._graph_pid)
     assert "semantics" not in workflow_node.base.extras.all
+
+
+def test_attribute_ref_defaults_to_subject_node() -> None:
+    @task()
+    def emit_number() -> Annotated[
+        float,
+        meta(
+            semantics={
+                "label": "Number",
+                "attributes": {"schema:value": attribute_ref("value")},
+            }
+        ),
+    ]:
+        return 3.5
+
+    @task.graph()
+    def flow():
+        return emit_number().result
+
+    engine = LocalEngine()
+    outputs = engine.run(flow.build())
+    node = outputs["result"]
+    semantics = node.base.extras.get("semantics")
+    assert isinstance(semantics, list)
+    entry = semantics[0]
+    assert entry["schema:value"] == 3.5
 
 
 def test_semantics_accepts_pydantic_tag() -> None:

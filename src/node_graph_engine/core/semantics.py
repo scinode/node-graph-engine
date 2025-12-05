@@ -125,6 +125,31 @@ def _resolve_semantic_value(
     """Recursively replace placeholder directives with task references."""
 
     if isinstance(value, dict):
+        if ATTR_REF_KEY in value:
+            ref = value.get(ATTR_REF_KEY) or {}
+            socket_ref = ref.get("socket")
+            attr_key = ref.get("key")
+            source = ref.get("source") or "attributes"
+            node: Optional[orm.Node] = None
+            if socket_ref is None and isinstance(subject_node, orm.Data):
+                node = subject_node
+            elif isinstance(socket_ref, _SocketRef):
+                reference = f"{socket_ref.kind}s__{socket_ref.socket_path}"
+                node = _resolve_socket_reference(
+                    reference, inputs_map=inputs_map, outputs_map=outputs_map
+                )
+            elif socket_ref is not None:
+                node = _resolve_socket_reference(
+                    str(socket_ref), inputs_map=inputs_map, outputs_map=outputs_map
+                )
+            if isinstance(node, orm.Data) and attr_key:
+                try:
+                    if source == "extras":
+                        return node.base.extras.get(attr_key)
+                    return node.base.attributes.get(attr_key)
+                except Exception:
+                    return None
+            return None
         if "@socket" in value or "socket" in value:
             ref = value.get("@socket", value.get("socket"))
             task = _resolve_socket_reference(
@@ -323,7 +348,10 @@ def _build_socket_resolver(
 
 
 def _resolve_attachment_value(
-    value: Any, resolver: Callable[[Optional[_SocketRef]], Optional[orm.Node]]
+    value: Any,
+    resolver: Callable[[Optional[_SocketRef]], Optional[orm.Node]],
+    *,
+    subject_node: Optional[orm.Data] = None,
 ) -> Any:
     """Resolve pending attachment values (socket refs, orm nodes, nested structures)."""
 
@@ -335,7 +363,10 @@ def _resolve_attachment_value(
         if ATTR_REF_KEY in value:
             ref = value.get(ATTR_REF_KEY) or {}
             socket_ref = ref.get("socket")
-            node = resolver(socket_ref) if socket_ref is not None else None
+            if socket_ref is None:
+                node = subject_node
+            else:
+                node = resolver(socket_ref)
             key = ref.get("key")
             source = ref.get("source") or "attributes"
             if isinstance(node, orm.Data) and key:
@@ -348,14 +379,18 @@ def _resolve_attachment_value(
             return None
         resolved: Dict[str, Any] = {}
         for key, nested in value.items():
-            processed = _resolve_attachment_value(nested, resolver)
+            processed = _resolve_attachment_value(
+                nested, resolver, subject_node=subject_node
+            )
             if processed is not None:
                 resolved[key] = processed
         return resolved
     if isinstance(value, (list, tuple)):
         resolved_items: List[Any] = []
         for item in value:
-            processed = _resolve_attachment_value(item, resolver)
+            processed = _resolve_attachment_value(
+                item, resolver, subject_node=subject_node
+            )
             if processed is not None:
                 resolved_items.append(processed)
         return resolved_items
@@ -384,9 +419,13 @@ def apply_pending_semantics(process_node: orm.ProcessNode, graph: Any) -> None:
         if not relation.values:
             continue
         resolved = (
-            _resolve_attachment_value(relation.values, resolver)
+            _resolve_attachment_value(
+                relation.values, resolver, subject_node=subject_node
+            )
             if len(relation.values) > 1
-            else _resolve_attachment_value(relation.values[0], resolver)
+            else _resolve_attachment_value(
+                relation.values[0], resolver, subject_node=subject_node
+            )
         )
         payload: Dict[str, Any] = {
             "relations": {relation.predicate: resolved},
@@ -413,7 +452,9 @@ def apply_pending_semantics(process_node: orm.ProcessNode, graph: Any) -> None:
         if annotation is None or annotation.is_empty:
             continue
         payload = annotation.to_jsonld()
-        payload = _resolve_attachment_value(payload, resolver)
+        payload = _resolve_attachment_value(
+            payload, resolver, subject_node=subject_node
+        )
         if pending_payload.socket_label:
             payload["socket"] = pending_payload.socket_label
         _append_semantics_entry(subject_node, payload)

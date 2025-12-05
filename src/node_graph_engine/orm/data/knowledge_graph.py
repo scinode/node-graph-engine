@@ -36,29 +36,48 @@ class KnowledgeGraphData(orm.Dict):
         except ValueError:
             # SQLite backend cannot filter nested JSON; fall back to filtering in Python.
             qb = QueryBuilder()
-            qb.append(cls, filters={"extras": {"has_key": "scope"}})
+            qb.append(cls)
             for node, in qb.iterall():  # type: ignore[misc]
-                extras = getattr(node.base, "extras", None)
-                if extras is None:
-                    continue
-                extras_map = extras.all if hasattr(extras, "all") else extras
-                if not isinstance(extras_map, dict):
-                    continue
-                scope = filters.get("extras", {}).get("scope")
-                if scope and extras_map.get("scope") != scope:
-                    continue
-                match = True
-                for key, val in filters.get("extras", {}).items():
-                    if key == "scope":
-                        continue
-                    if val is None:
-                        continue
-                    if extras_map.get(key) != val:
-                        match = False
-                        break
-                if match:
+                if cls._matches_filter_namespaces(node, filters):
                     return node
             return None
+
+    @staticmethod
+    def _matches_filter_namespaces(node: orm.Node, filters: Dict[str, Any]) -> bool:
+        for namespace, expected in filters.items():
+            if namespace not in {"extras", "attributes"}:
+                continue
+            base = getattr(node.base, namespace, None)
+            if base is None:
+                return False
+            data = base.all if hasattr(base, "all") else base
+            if not isinstance(data, dict):
+                return False
+            if not KnowledgeGraphData._dict_matches(data, expected):
+                return False
+        return True
+
+    @staticmethod
+    def _dict_matches(data: Dict[str, Any], expected: Dict[str, Any]) -> bool:
+        for key, val in expected.items():
+            if key == "has_key":
+                if isinstance(val, str) and val not in data:
+                    return False
+                if isinstance(val, (list, tuple, set)) and any(v not in data for v in val):
+                    return False
+                continue
+            if val is None:
+                continue
+            if isinstance(val, dict):
+                sub = data.get(key)
+                if not isinstance(sub, dict):
+                    return False
+                if not KnowledgeGraphData._dict_matches(sub, val):
+                    return False
+                continue
+            if data.get(key) != val:
+                return False
+        return True
 
     @classmethod
     def get_or_create_workflow(
@@ -72,32 +91,28 @@ class KnowledgeGraphData(orm.Dict):
         extras: Optional[Dict[str, Any]] = None,
     ) -> Tuple["KnowledgeGraphData", bool]:
         filters: Dict[str, Any] = {
-            "extras": {
+            "attributes": {
                 "scope": "workflow",
-                "workflow_name": workflow_name,
+                "workflow": {
+                    "name": workflow_name,
+                },
             }
         }
+        workflow_filters = filters["attributes"]["workflow"]  # type: ignore[index]
         if callable_path:
-            filters["extras"]["callable_path"] = callable_path
+            workflow_filters["callable_path"] = callable_path
         if package_version:
-            filters["extras"]["package_version"] = package_version
+            workflow_filters["package_version"] = package_version
         if identifier:
-            filters["extras"]["identifier"] = identifier
+            workflow_filters["identifier"] = identifier
 
         existing = cls._maybe_existing(filters)
         if existing:
             return existing, False
 
         node = cls(dict=payload)
-        meta = {
-            "scope": "workflow",
-            "workflow_name": workflow_name,
-            "callable_path": callable_path,
-            "package_version": package_version,
-            "identifier": identifier,
-        }
-        meta.update(extras or {})
-        node.base.extras.set_many(meta)
+        if extras:
+            node.base.extras.set_many(extras)
         node.store()
         return node, True
 
@@ -364,12 +379,15 @@ def build_workflow_knowledge_payload(
     entries = _collect_socket_semantics(graph)
     if not entries:
         return None
+    identifier = definition.get("task_identifier") if isinstance(definition, dict) else None
+    if identifier is None:
+        identifier = getattr(graph, "name", None)
 
     payload: Dict[str, Any] = {
         "scope": "workflow",
         "workflow": {
             "name": getattr(graph, "name", None),
-            "identifier": definition.get("task_identifier") if isinstance(definition, dict) else None,
+            "identifier": identifier,
             "module": definition.get("module") if isinstance(definition, dict) else None,
             "qualname": definition.get("qualname") if isinstance(definition, dict) else None,
             "callable_path": definition.get("callable_path") if isinstance(definition, dict) else None,
