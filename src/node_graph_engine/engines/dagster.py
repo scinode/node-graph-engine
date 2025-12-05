@@ -306,7 +306,7 @@ class DagsterEngine(BaseEngine):
                 if graph_context.semantics is not None
                 else None
             )
-            pending_semantics = getattr(ng, "semantics_buffer", None)
+            pending_semantics = ng.knowledge_graph.semantics_buffer
             if pending_semantics is not None:
                 pending_semantics = serialize_semantics_buffer(pending_semantics)
             return {
@@ -361,10 +361,14 @@ class DagsterEngine(BaseEngine):
             semantics_spec = TaskSemantics.from_dict(engine_context.get("semantics"))
             pending_payload = engine_context.get("semantics_buffer")
 
+            class _KG:
+                def __init__(self, pending: Any) -> None:
+                    self.semantics_buffer = pending
+
             class _GraphProxy:
                 def __init__(self, uuid: str, pending: Any) -> None:
                     self.uuid = uuid
-                    setattr(self, "semantics_buffer", pending)
+                    self.knowledge_graph = _KG(pending)
 
             graph_proxy = (
                 _GraphProxy(engine_context.get("graph_uuid"), pending_payload)

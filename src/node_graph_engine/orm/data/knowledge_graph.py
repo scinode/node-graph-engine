@@ -328,7 +328,7 @@ def _collect_socket_semantics(graph: Any) -> Dict[Tuple[str, str, str], Semantic
             )
         )
 
-    pending_raw = getattr(graph, "semantics_buffer", None)
+    pending_raw = graph.knowledge_graph.semantics_buffer
     pending = _normalize_semantics_buffer(pending_raw)
     _merge_payload_annotations(entries, pending.get("payloads", []))
     _merge_relation_annotations(entries, pending.get("relations", []))

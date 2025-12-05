@@ -295,7 +295,7 @@ def airflow_init_task(**context: Any) -> Dict[str, Any]:
         if graph_context.semantics is not None
         else None
     )
-    pending_semantics = getattr(ng, "semantics_buffer", None)
+    pending_semantics = ng.knowledge_graph.semantics_buffer
     if pending_semantics is not None:
         from node_graph.semantics import serialize_semantics_buffer
 
@@ -339,10 +339,14 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
     pending_payload = runtime_context.get("semantics_buffer")
     graph_uuid = runtime_context.get("graph_uuid")
 
+    class _KG:
+        def __init__(self, pending: Any) -> None:
+            self.semantics_buffer = pending
+
     class _GraphProxy:
         def __init__(self, uuid: Optional[str], pending: Any) -> None:
             self.uuid = uuid or "<graph>"
-            setattr(self, "semantics_buffer", pending)
+            self.knowledge_graph = _KG(pending)
 
     graph_proxy = (
         _GraphProxy(graph_uuid, pending_payload)

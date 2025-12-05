@@ -13,7 +13,7 @@ What gets stored
   version (keyed by workflow name, callable path, package version).
 - **Semantics source**
   - Socket annotations in task definitions (inputs/outputs)
-  - Runtime semantics attachments/relations buffered in ``graph.semantics_buffer``
+- Runtime semantics attachments/relations buffered in ``graph.knowledge_graph.semantics_buffer`` (falls back to ``graph.semantics_buffer`` for older graphs)
 - **Merge strategy**: annotations and runtime attachments for the same socket are
   merged into a single payload. Attachments referencing sockets are resolved to
   lightweight references; nothing is duplicated per run.

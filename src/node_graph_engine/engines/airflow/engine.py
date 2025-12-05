@@ -307,7 +307,10 @@ class AirflowEngine(BaseEngine):
         parent_pid: Optional[str] = None,
         force_trigger: bool = False,
         wait: bool = False,
+        task_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        # ``task_context`` is accepted for interface compatibility with sub-graph execution.
+        _ = task_context
         try:
             from aiida.orm.utils.serialize import deserialize_unsafe, serialize
         except Exception as exc:

@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 from aiida import orm
 from aiida.common.links import LinkType
 from node_graph.semantics import (
+    ATTR_REF_KEY,
     SemanticsAnnotation,
     TaskSemantics,
     SemanticsPayload,
@@ -16,22 +17,7 @@ from node_graph.semantics import (
 )
 
 _SEMANTICS_EXTRA_KEY = "_node_graph_semantics"
-_SEMANTICS_BUFFER_ATTRS = ("semantics_buffer",)
 
-
-def _get_semantics_buffer(graph: Any) -> Optional[Dict[str, List[Any]]]:
-    """Fetch semantics buffer from a graph using supported attribute names."""
-
-    for attr in _SEMANTICS_BUFFER_ATTRS:
-        if hasattr(graph, attr):
-            return getattr(graph, attr, None)
-    return None
-
-
-def _set_semantics_buffer(graph: Any, value: Dict[str, List[Any]]) -> None:
-    """Persist semantics buffer on the primary attribute."""
-
-    setattr(graph, "semantics_buffer", value)
 
 
 def _node_reference(node: orm.Node) -> Dict[str, Any]:
@@ -307,8 +293,16 @@ def _build_socket_resolver(
     def _resolve_process(node_label: str) -> Optional[orm.ProcessNode]:
         if node_label in children:
             return children[node_label]
+        # Graph pseudo-tasks (inputs/outputs) live on the parent process node.
+        if node_label in ("graph_inputs", "graph_outputs", ""):
+            return process_node
         if node_label == getattr(process_node, "process_label", None):
             return process_node
+        graph_label = f"Graph<{node_label}>"
+        if graph_label == getattr(process_node, "process_label", None):
+            return process_node
+        if graph_label in children:
+            return children[graph_label]
         return None
 
     def _resolver(ref: Optional[_SocketRef]) -> Optional[orm.Node]:
@@ -338,6 +332,20 @@ def _resolve_attachment_value(
     if isinstance(value, set):
         value = list(value)
     if isinstance(value, dict):
+        if ATTR_REF_KEY in value:
+            ref = value.get(ATTR_REF_KEY) or {}
+            socket_ref = ref.get("socket")
+            node = resolver(socket_ref) if socket_ref is not None else None
+            key = ref.get("key")
+            source = ref.get("source") or "attributes"
+            if isinstance(node, orm.Data) and key:
+                try:
+                    if source == "extras":
+                        return node.base.extras.get(key)
+                    return node.base.attributes.get(key)
+                except Exception:
+                    return None
+            return None
         resolved: Dict[str, Any] = {}
         for key, nested in value.items():
             processed = _resolve_attachment_value(nested, resolver)
@@ -359,11 +367,11 @@ def apply_pending_semantics(process_node: orm.ProcessNode, graph: Any) -> None:
 
     if graph is None:
         return
-    pending_raw: Optional[Dict[str, List[Any]]] = _get_semantics_buffer(graph)
+    pending_raw: Optional[Dict[str, List[Any]]] = graph.knowledge_graph.semantics_buffer
     pending = _normalize_semantics_buffer(pending_raw)
     if not pending.get("relations") and not pending.get("payloads"):
         return
-    _set_semantics_buffer(graph, pending)
+    graph.knowledge_graph.semantics_buffer = pending
 
     resolver = _build_socket_resolver(process_node)
 
