@@ -31,6 +31,7 @@ from node_graph_engine.core.utils import (
     load_default_user,
     update_nested_dict_with_special_keys,
 )
+from node_graph_engine.orm.data.knowledge_graph import persist_workflow_knowledge_graph
 from node_graph_engine.core.task import TaskMeta
 
 from .async_request import AsyncNodeExecutionRequest
@@ -405,5 +406,16 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         raise
     finally:
         finalize_pending_semantics(process_node, graph_proxy, success=success)
+        if success and graph_proxy is not None:
+            try:
+                persist_workflow_knowledge_graph(
+                    process_node=process_node,
+                    graph=graph_proxy,
+                    engine_kind="airflow",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to persist workflow knowledge graph for %s", process_node
+                )
         if not process_node.is_sealed:
             process_node.seal()

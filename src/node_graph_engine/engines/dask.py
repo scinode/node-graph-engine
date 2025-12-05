@@ -25,6 +25,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 
 from dask import compute, delayed
 from dask.delayed import Delayed
@@ -228,4 +229,10 @@ class DaskEngine(BaseEngine):
             finalize_pending_semantics(
                 context.process_node, context.ng, success=success
             )
+            if success:
+                persist_workflow_knowledge_graph(
+                    process_node=context.process_node,
+                    graph=context.ng,
+                    engine_kind=self.engine_kind,
+                )
             context.process_node.seal()

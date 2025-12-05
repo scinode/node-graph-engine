@@ -2,9 +2,9 @@ Knowledge graphs (workflow semantics)
 ====================================
 
 .. note::
-   This feature is available in the Local engine; other engines can call the
-   same helper (``persist_workflow_knowledge``) to emit knowledge graphs once
-   integration is added.
+   The Local engine persists workflow knowledge graphs out of the box. Other engines
+   call the same helper (``persist_workflow_knowledge_graph``); ensure integration is
+   enabled for your backend.
 
 What gets stored
 ----------------
@@ -81,10 +81,35 @@ Notes and scope
 
 - High-throughput friendly: semantics are stored once per workflow version, not
   per run, avoiding repeated JSON-LD blobs.
+- Per-run nodes remain lean: they only carry the socket-level ontology payload
+  (label/IRI/context/attributes). Agents should follow standard AiiDA provenance
+  (creator process links) and, if needed, the workflow knowledge graph UUID on
+  the workflow ``ProcessNode`` to marry runtime values with the workflow schema.
 - Runtime attachments (relations, extra attributes) are merged with the static
   annotations, so user-provided additions on sockets are preserved.
 - Node-level knowledge snapshots are not stored; link from workflow knowledge to
   run nodes via provenance if you need concrete values.
+
+Schema at a glance
+------------------
+
+- **Nodes**: one JSON-LD entry per socket (task/direction/socket). Key fields:
+  - ``@id``: ``ng://{task}/{direction}/{socket}`` (stable socket identifier)
+  - ``task`` / ``direction`` / ``socket``: back-references to the graph socket
+  - ``label`` / ``iri`` / ``rdf_types`` / ``attributes`` / ``relations``: ontology payload
+- **Relations**: predicates declared in ``attributes``/``relations`` are preserved.
+- **Context**: ``@context`` carries namespace prefixes (``qudt``, ``qudt-unit``, ``prov``, etc.).
+
+Interpreting and visualising
+----------------------------
+
+- Resolution path for agents/queries:
+  - **Property-first (common chat flow)**: search semantics (by IRI/label/unit) across data nodes → for each hit, follow AiiDA links to the creator process → climb to the root workflow → read ``knowledge_graph_uuid`` → look up the matching socket in the KG to normalise meaning/units → use provenance to fetch related inputs/structures/sibling properties.
+  - **Schema-first**: search the workflow KG for sockets matching an IRI/label (e.g. ``qudt:BulkModulus``) → enumerate workflow runs that reference that KG (via ``knowledge_graph_uuid`` on the workflow process) → pull produced data nodes via provenance → convert/align units using KG attributes.
+  - **Data-first**: given a specific ``Data`` UUID, follow provenance to its creator/root workflow, fetch the KG, and interpret/compare via the canonical socket (``task``/``direction``/``socket``).
+- Visualisation: load ``payload['semantics']['jsonld']`` into RDFLib and render with GraphViz
+  (see example above). Socket identifiers (``ng://…``) make it easy to see which part of the
+  workflow a property belongs to.
 
 Next steps
 ----------

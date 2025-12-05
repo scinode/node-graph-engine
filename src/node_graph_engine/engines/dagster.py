@@ -42,6 +42,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 
 
 def _node_job(
@@ -391,6 +392,12 @@ class DagsterEngine(BaseEngine):
                 raise
             finally:
                 finalize_pending_semantics(process_node, graph_proxy, success=success)
+                if success:
+                    persist_workflow_knowledge_graph(
+                        process_node=process_node,
+                        graph=ng,
+                        engine_kind=self.engine_kind,
+                    )
             self._last_graph_outputs = graph_outputs
             return self._encode_output_value(graph_outputs)
 

@@ -28,6 +28,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 
 
 _TASK_NAME_SANITIZE_RE = re.compile(r"[^0-9A-Za-z_]")
@@ -250,6 +251,12 @@ class RedunEngine(BaseEngine):
         finally:
             try:
                 finalize_pending_semantics(process_node, ng, success=success)
+                if success:
+                    persist_workflow_knowledge_graph(
+                        process_node=process_node,
+                        graph=ng,
+                        engine_kind=self.engine_kind,
+                    )
                 process_node.seal()
             except Exception:
                 pass

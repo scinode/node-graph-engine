@@ -485,7 +485,7 @@ def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -
     from aiida.orm.utils.serialize import serialize
     from aiida_pythonjob.utils import serialize_ports
 
-    ngdata = ng.to_dict(include_sockets=True, should_serialize=True)
+    ngdata = ng.to_dict(should_serialize=True)
     task_inputs = {}
     for name, task in ngdata['tasks'].items():
         # clean pickled executor before save to database

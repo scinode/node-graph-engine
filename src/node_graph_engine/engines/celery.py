@@ -24,6 +24,7 @@ from ..core.utils import (
     _is_encoded_tagged,
     update_nested_dict_with_special_keys,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 
 from celery import Celery
 from celery.result import AsyncResult
@@ -439,4 +440,10 @@ class CeleryEngine(BaseEngine):
             finalize_pending_semantics(
                 context.process_node, context.ng, success=success
             )
+            if success:
+                persist_workflow_knowledge_graph(
+                    process_node=context.process_node,
+                    graph=context.ng,
+                    engine_kind=self.engine_kind,
+                )
             context.process_node.seal()
