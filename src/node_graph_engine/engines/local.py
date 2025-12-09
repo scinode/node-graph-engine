@@ -121,9 +121,6 @@ class LocalEngine(BaseEngine):
             mark_process_failure(context.process_node, e)
             raise
         finally:
-            finalize_pending_semantics(
-                context.process_node, context.ng, success=success
-            )
             if success:
                 persist_workflow_knowledge_graph(
                     process_node=context.process_node,

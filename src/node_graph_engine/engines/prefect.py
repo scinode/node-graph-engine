@@ -15,7 +15,7 @@ from ..core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
+from ..core.semantics import record_graph_semantics
 from ..core.remote_execution import _remote_task_job
 from ..core.task import EngineTaskExecutor, TaskMeta
 from ..core.utils import (
@@ -271,9 +271,6 @@ class PrefectEngine(BaseEngine):
             mark_process_failure(context.process_node, e)
             raise
         finally:
-            finalize_pending_semantics(
-                context.process_node, context.ng, success=success
-            )
             if success:
                 persist_workflow_knowledge_graph(
                     process_node=context.process_node,

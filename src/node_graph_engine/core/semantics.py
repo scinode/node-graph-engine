@@ -400,64 +400,9 @@ def _resolve_attachment_value(
 def apply_pending_semantics(process_node: orm.ProcessNode, graph: Any) -> None:
     """Flush semantics registered against graph sockets (via ``attach_semantics``)."""
 
-    if graph is None:
-        return
-    pending_raw: Optional[Dict[str, List[Any]]] = graph.knowledge_graph.semantics_buffer
-    pending = _normalize_semantics_buffer(pending_raw)
-    if not pending.get("relations") and not pending.get("payloads"):
-        return
-    graph.knowledge_graph.semantics_buffer = pending
-
-    resolver = _build_socket_resolver(process_node)
-
-    for relation in pending.get("relations", []):
-        if not isinstance(relation, SemanticsRelation):
-            continue
-        subject_node = resolver(relation.subject)
-        if not isinstance(subject_node, orm.Data):
-            continue
-        if not relation.values:
-            continue
-        resolved = (
-            _resolve_attachment_value(
-                relation.values, resolver, subject_node=subject_node
-            )
-            if len(relation.values) > 1
-            else _resolve_attachment_value(
-                relation.values[0], resolver, subject_node=subject_node
-            )
-        )
-        payload: Dict[str, Any] = {
-            "relations": {relation.predicate: resolved},
-        }
-        if relation.label:
-            payload["label"] = relation.label
-        if relation.context:
-            payload["context"] = dict(relation.context)
-        if relation.socket_label:
-            payload["socket"] = relation.socket_label
-        _append_semantics_entry(subject_node, payload)
-
-    for pending_payload in pending.get("payloads", []):
-        if not isinstance(pending_payload, SemanticsPayload):
-            continue
-        subject_node = resolver(pending_payload.subject)
-        if not isinstance(subject_node, orm.Data):
-            continue
-        semantics = pending_payload.semantics
-        if isinstance(semantics, SemanticsAnnotation):
-            annotation = semantics
-        else:
-            annotation = SemanticsAnnotation.from_raw(semantics)
-        if annotation is None or annotation.is_empty:
-            continue
-        payload = annotation.to_jsonld()
-        payload = _resolve_attachment_value(
-            payload, resolver, subject_node=subject_node
-        )
-        if pending_payload.socket_label:
-            payload["socket"] = pending_payload.socket_label
-        _append_semantics_entry(subject_node, payload)
+    # This hook is intentionally a no-op; runtime semantics are now handled
+    # directly via the graph knowledge graph and persisted separately.
+    return
 
 
 def store_socket_semantics_from_links(
@@ -529,8 +474,5 @@ def record_graph_semantics(
 def finalize_pending_semantics(
     process_node: orm.ProcessNode, graph: Any, *, success: bool
 ) -> None:
-    """Flush child semantics and apply deferred attachments after graph completion."""
-
-    flush_registered_semantics(process_node)
-    if success:
-        apply_pending_semantics(process_node, graph)
+    """Legacy hook retained for compatibility (no-op)."""
+    return

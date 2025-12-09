@@ -9,16 +9,26 @@ Knowledge graphs (workflow semantics)
 What gets stored
 ----------------
 
-- **KnowledgeGraphData** (AiiDA ``KnowledgeGraphData`` node) is written once per workflow
-  version (keyed by workflow name, callable path, package version).
+- **KnowledgeGraphData** (AiiDA ``KnowledgeGraphData`` node) is written once per
+  workflow version (keyed by workflow name, callable path, package version).
 - **Semantics source**
   - Socket annotations in task definitions (inputs/outputs)
-- Runtime semantics attachments/relations buffered in ``graph.knowledge_graph.semantics_buffer`` (falls back to ``graph.semantics_buffer`` for older graphs)
-- **Merge strategy**: annotations and runtime attachments for the same socket are
+- Runtime semantics relations/annotations are buffered internally on
+  ``graph.knowledge_graph``.
+- **Merge strategy**: annotations and runtime additions for the same socket are
   merged into a single payload. Attachments referencing sockets are resolved to
   lightweight references; nothing is duplicated per run.
-- **Format**: stored as JSON-LD in ``payload['semantics']['jsonld']`` (``@graph``
-  entries with ``@id``, ``task``, ``direction``, ``socket`` and ontology predicates).
+- **Format**: stored under ``payload['semantics']`` using
+  ``Graph.knowledge_graph.to_dict()`` (JSON-LD is reconstructed on demand):
+
+  .. code-block:: json
+
+     {
+       "graph_uuid": "abc123",
+       "namespaces": {"qudt": "http://qudt.org/schema/qudt/", "rdf": "...", "rdfs": "..."},
+       "sockets": {"task.output.result": {"task": "task", "direction": "output", "port": "result", "label": "Band gap"}},
+       "triples": [["task.output.result", "rdf:type", "qudt:QuantityValue"], ["task.output.result", "rdfs:label", "Band gap"]]
+     }
 
 Where it is stored
 ------------------
@@ -41,8 +51,7 @@ Example (``verdi shell``) to fetch the latest workflow knowledge graph:
 
    from aiida import orm
    from aiida.orm import QueryBuilder
-   from node_graph_engine.data.knowledge_graph import KnowledgeGraphData
-   import json
+   from node_graph_engine.orm.data.knowledge_graph import KnowledgeGraphData
 
    qb = QueryBuilder()
    qb.append(KnowledgeGraphData)
@@ -50,8 +59,21 @@ Example (``verdi shell``) to fetch the latest workflow knowledge graph:
    if kg is None:
        raise RuntimeError("No KnowledgeGraphData with scope=workflow found")
    payload = kg.get_dict()
-   jsonld = payload["semantics"]["jsonld"]
-   print(json.dumps(jsonld, indent=2))
+   semantics = payload["semantics"]
+   print("Graph UUID:", semantics.get("graph_uuid"))
+   print("Sockets:", semantics["sockets"])
+   print("Triples:", semantics["triples"])
+
+Use ``KnowledgeGraphData.to_jsonld()`` to reconstruct JSON-LD for RDF/GraphViz export (or inspect compact semantics directly when working with ``Graph.knowledge_graph``):
+
+.. code-block:: python
+
+   import json
+   from rdflib import Graph
+
+   jsonld = kg.to_jsonld()
+   g = Graph().parse(data=json.dumps(jsonld), format="json-ld")
+   g.serialize("knowledge.ttl", format="turtle")
 
 Visualising
 -----------
@@ -85,7 +107,7 @@ Notes and scope
   (label/IRI/context/attributes). Agents should follow standard AiiDA provenance
   (creator process links) and, if needed, the workflow knowledge graph UUID on
   the workflow ``ProcessNode`` to marry runtime values with the workflow schema.
-- Runtime attachments (relations, extra attributes) are merged with the static
+- Runtime additions (relations, extra attributes) are merged with the static
   annotations, so user-provided additions on sockets are preserved.
 - Node-level knowledge snapshots are not stored; link from workflow knowledge to
   run nodes via provenance if you need concrete values.
@@ -93,12 +115,13 @@ Notes and scope
 Schema at a glance
 ------------------
 
-- **Nodes**: one JSON-LD entry per socket (task/direction/socket). Key fields:
-  - ``@id``: ``ng://{task}/{direction}/{socket}`` (stable socket identifier)
-  - ``task`` / ``direction`` / ``socket``: back-references to the graph socket
-  - ``label`` / ``iri`` / ``rdf_types`` / ``attributes`` / ``relations``: ontology payload
-- **Relations**: predicates declared in ``attributes``/``relations`` are preserved.
-- **Context**: ``@context`` carries namespace prefixes (``qudt``, ``qudt-unit``, ``prov``, etc.).
+- **Sockets**: metadata for each socket (task, direction, port, label).
+- **Triples**: ``[subject, predicate, object]`` with subjects as socket IDs
+  (``task.direction.socket``), predicates from ontology IRIs/CURIEs, and objects
+  as socket IDs, IRIs, or literals.
+- **Context**: merged JSON-LD context from annotations/runtime additions plus RDF/RDFS
+  prefixes (available via ``semantics['namespaces']``).
+- **JSON-LD**: preserved under ``payload['semantics']['jsonld']`` for interoperability.
 
 Interpreting and visualising
 ----------------------------

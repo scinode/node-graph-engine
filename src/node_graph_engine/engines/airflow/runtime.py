@@ -17,11 +17,7 @@ from node_graph_engine.core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from node_graph_engine.core.semantics import (
-    TaskSemantics,
-    finalize_pending_semantics,
-    record_graph_semantics,
-)
+from node_graph_engine.core.semantics import TaskSemantics, record_graph_semantics
 from node_graph_engine.core.utils import (
     close_threadlocal_aiida_session,
     ensure_aiida_profile,
@@ -29,6 +25,7 @@ from node_graph_engine.core.utils import (
     get_default_user_email,
     get_nested_dict,
     load_default_user,
+    load_nodegraph_data,
     update_nested_dict_with_special_keys,
 )
 from node_graph_engine.orm.data.knowledge_graph import persist_workflow_knowledge_graph
@@ -295,17 +292,10 @@ def airflow_init_task(**context: Any) -> Dict[str, Any]:
         if graph_context.semantics is not None
         else None
     )
-    pending_semantics = ng.knowledge_graph.semantics_buffer
-    if pending_semantics is not None:
-        from node_graph.semantics import serialize_semantics_buffer
-
-        pending_semantics = serialize_semantics_buffer(pending_semantics)
-
     return {
         "graph_pid": graph_context.process_node.uuid,
         "values": dict(graph_context.values),
         "semantics": semantics_data,
-        "semantics_buffer": pending_semantics,
         "graph_uuid": ng.uuid,
     }
 
@@ -336,28 +326,21 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
 
     process_node = orm.load_node(graph_pid)
     semantics_spec = TaskSemantics.from_dict(runtime_context.get("semantics"))
-    pending_payload = runtime_context.get("semantics_buffer")
     graph_uuid = runtime_context.get("graph_uuid")
 
-    class _KG:
-        def __init__(self, pending: Any) -> None:
-            self.semantics_buffer = pending
-
-    class _GraphProxy:
-        def __init__(self, uuid: Optional[str], pending: Any) -> None:
-            self.uuid = uuid or "<graph>"
-            self.knowledge_graph = _KG(pending)
-
-    graph_proxy = (
-        _GraphProxy(graph_uuid, pending_payload)
-        if pending_payload is not None
-        else None
-    )
+    graph_proxy = None
+    try:
+        ngdata = load_nodegraph_data(process_node)
+        if ngdata:
+            graph_proxy = Graph.from_dict(ngdata)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to rebuild graph %s for knowledge graph persistence", graph_pid
+        )
 
     success = False
     if process_node.is_excepted:
-        finalize_pending_semantics(process_node, graph_proxy, success=success)
-        if not process_node.is_sealed:
+                if not process_node.is_sealed:
             process_node.seal()
         raise RuntimeError("Graph execution failed; see upstream task logs for details")
 
@@ -409,8 +392,7 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         mark_process_failure(process_node, exc)
         raise
     finally:
-        finalize_pending_semantics(process_node, graph_proxy, success=success)
-        if success and graph_proxy is not None:
+                if success and graph_proxy is not None:
             try:
                 persist_workflow_knowledge_graph(
                     process_node=process_node,

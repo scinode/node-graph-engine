@@ -18,7 +18,7 @@ from ..core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
+from ..core.semantics import record_graph_semantics
 from ..core.task import EngineTaskExecutor
 from ..core.utils import (
     _collect_literals,
@@ -250,7 +250,6 @@ class RedunEngine(BaseEngine):
             raise
         finally:
             try:
-                finalize_pending_semantics(process_node, ng, success=success)
                 if success:
                     persist_workflow_knowledge_graph(
                         process_node=process_node,

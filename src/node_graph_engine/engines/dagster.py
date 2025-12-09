@@ -17,7 +17,6 @@ from dagster import (
 )
 from node_graph import Graph
 from node_graph.graph import BUILTIN_TASKS
-from node_graph.semantics import serialize_semantics_buffer
 
 from ..core.base import BaseEngine
 from ..core.execution import (
@@ -29,11 +28,7 @@ from ..core.execution import (
     prepare_graph_run,
     _scan_links_topology,
 )
-from ..core.semantics import (
-    TaskSemantics,
-    finalize_pending_semantics,
-    record_graph_semantics,
-)
+from ..core.semantics import TaskSemantics, record_graph_semantics
 from ..core.task import EngineTaskExecutor, TaskMeta
 from ..core.utils import (
     _collect_literals,
@@ -306,14 +301,10 @@ class DagsterEngine(BaseEngine):
                 if graph_context.semantics is not None
                 else None
             )
-            pending_semantics = ng.knowledge_graph.semantics_buffer
-            if pending_semantics is not None:
-                pending_semantics = serialize_semantics_buffer(pending_semantics)
             return {
                 "graph_pid": process_node.uuid,
                 "values": values,
                 "semantics": semantics_data,
-                "semantics_buffer": pending_semantics,
                 "graph_uuid": ng.uuid,
             }
 
@@ -359,22 +350,6 @@ class DagsterEngine(BaseEngine):
             graph_pid = engine_context["graph_pid"]
             process_node = self._load_process_node(graph_pid)
             semantics_spec = TaskSemantics.from_dict(engine_context.get("semantics"))
-            pending_payload = engine_context.get("semantics_buffer")
-
-            class _KG:
-                def __init__(self, pending: Any) -> None:
-                    self.semantics_buffer = pending
-
-            class _GraphProxy:
-                def __init__(self, uuid: str, pending: Any) -> None:
-                    self.uuid = uuid
-                    self.knowledge_graph = _KG(pending)
-
-            graph_proxy = (
-                _GraphProxy(engine_context.get("graph_uuid"), pending_payload)
-                if pending_payload is not None
-                else None
-            )
 
             success = False
             try:
@@ -395,7 +370,6 @@ class DagsterEngine(BaseEngine):
                 self._mark_failure_once(graph_pid, exc)
                 raise
             finally:
-                finalize_pending_semantics(process_node, graph_proxy, success=success)
                 if success:
                     persist_workflow_knowledge_graph(
                         process_node=process_node,

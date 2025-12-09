@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import hashlib
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from aiida import orm
-from aiida.common.links import LinkType
 from aiida.orm import QueryBuilder
-from node_graph.semantics import (
-    SemanticsAnnotation,
-    SemanticsTree,
-    TaskSemantics,
-    SemanticsPayload,
-    SemanticsRelation,
-    _SocketRef,
-    _normalize_semantics_buffer,
-)
+from node_graph.knowledge_graph import KnowledgeGraph
 
 
 class KnowledgeGraphData(orm.Dict):
@@ -25,6 +18,57 @@ class KnowledgeGraphData(orm.Dict):
     @property
     def payload(self) -> Dict[str, Any]:  # pragma: no cover - thin wrapper
         return self.get_dict()
+
+    def _as_core_knowledge_graph(self) -> KnowledgeGraph:
+        payload = self.get_dict() or {}
+        semantics = payload.get("semantics") or payload
+        workflow = payload.get("workflow") or {}
+        graph_uuid = (
+            semantics.get("graph_uuid")
+            or semantics.get("dag_id")
+            or workflow.get("identifier")
+            or workflow.get("name")
+        )
+        return KnowledgeGraph.from_dict(semantics, graph_uuid=graph_uuid)
+
+    def to_jsonld(self) -> Dict[str, Any]:
+        """
+        Return a JSON-LD representation of the stored semantics.
+
+        If a legacy ``jsonld`` block is present it is returned verbatim.
+        Otherwise we reconstruct JSON-LD from triples + sockets without
+        persisting duplicate data in the database.
+        """
+
+        payload = self.get_dict() or {}
+        semantics = payload.get("semantics") or payload
+        jsonld = semantics.get("jsonld") if isinstance(semantics, dict) else None
+        if isinstance(jsonld, dict):
+            return jsonld
+        rdf = self._as_core_knowledge_graph().as_rdflib()
+        serialized = rdf.serialize(format="json-ld")
+        if isinstance(serialized, bytes):
+            serialized = serialized.decode("utf-8")
+        return json.loads(serialized)
+
+    def to_rdf_graph(self):
+        """Return an ``rdflib.Graph`` parsed from the compact semantics."""
+
+        return self._as_core_knowledge_graph().as_rdflib()
+
+    def to_graphviz(self) -> "Digraph":
+        """Render the RDF graph to a Graphviz Digraph (requires graphviz)."""
+
+        return self._as_core_knowledge_graph().to_graphviz()
+
+    def to_graphviz_svg(self) -> str:
+        return self._as_core_knowledge_graph().to_graphviz_svg()
+
+    def _repr_svg_(self) -> Optional[str]:  # pragma: no cover - exercised in notebooks
+        return self._as_core_knowledge_graph()._repr_svg_()
+
+    def _repr_html_(self) -> Optional[str]:  # pragma: no cover - exercised in notebooks
+        return self._as_core_knowledge_graph()._repr_html_()
 
     @classmethod
     def _maybe_existing(cls, filters: Dict[str, Any]) -> Optional["KnowledgeGraphData"]:
@@ -84,35 +128,36 @@ class KnowledgeGraphData(orm.Dict):
         cls,
         *,
         workflow_name: str,
-        callable_path: Optional[str],
-        package_version: Optional[str],
-        identifier: Optional[str],
         payload: Dict[str, Any],
         extras: Optional[Dict[str, Any]] = None,
     ) -> Tuple["KnowledgeGraphData", bool]:
+        kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
         filters: Dict[str, Any] = {
             "attributes": {
                 "scope": "workflow",
-                "workflow": {
-                    "name": workflow_name,
-                },
+                "hash": kg_hash,
+                "workflow": {"name": workflow_name},
             }
         }
-        workflow_filters = filters["attributes"]["workflow"]  # type: ignore[index]
-        if callable_path:
-            workflow_filters["callable_path"] = callable_path
-        if package_version:
-            workflow_filters["package_version"] = package_version
-        if identifier:
-            workflow_filters["identifier"] = identifier
 
         existing = cls._maybe_existing(filters)
         if existing:
             return existing, False
 
         node = cls(dict=payload)
+        meta: Dict[str, Any] = {
+            "scope": "workflow",
+            "workflow_name": workflow_name,
+            "hash": kg_hash,
+        }
+        workflow_meta = payload.get("workflow") if isinstance(payload, dict) else {}
+        if isinstance(workflow_meta, dict):
+            meta["identifier"] = workflow_meta.get("identifier")
+            meta["callable_path"] = workflow_meta.get("callable_path")
+            meta["package_version"] = workflow_meta.get("package_version")
         if extras:
-            node.base.extras.set_many(extras)
+            meta.update(extras)
+        node.base.extras.set_many(meta)
         node.store()
         return node, True
 
@@ -135,236 +180,12 @@ class KnowledgeGraphData(orm.Dict):
         node.store()
         return node, True
 
+def _hash_semantics_payload(payload: Dict[str, Any]) -> str:
+    """Return a stable hash for a semantics/knowledge-graph payload."""
 
-def _flatten_semantics_tree(
-    tree: Optional[SemanticsTree], *, task_name: str, direction: str
-) -> Dict[Tuple[str, str, str], SemanticsAnnotation]:
-    entries: Dict[Tuple[str, str, str], SemanticsAnnotation] = {}
-
-    def _walk(node: Optional[SemanticsTree], path: str) -> None:
-        if node is None:
-            return
-        if node.annotation and not node.annotation.is_empty:
-            key = (task_name, direction, path or "")
-            entries[key] = node.annotation
-        for name, child in (node.children or {}).items():
-            child_path = f"{path}.{name}" if path else name
-            _walk(child, child_path)
-        if node.dynamic:
-            dynamic_path = f"{path}.*" if path else "*"
-            _walk(node.dynamic, dynamic_path)
-
-    _walk(tree, "")
-    return entries
-
-
-def _node_reference(node: orm.Node) -> Dict[str, Any]:
-    label = getattr(node, "label", None) or getattr(node, "process_label", None)
-    if not label:
-        description = getattr(node, "description", None)
-        label = description() if callable(description) else node.__class__.__name__
-    return {
-        "uuid": str(node.uuid),
-        "label": label,
-        "node_type": node.__class__.__name__,
-    }
-
-
-def _normalize_semantics_entry(entry: Dict[str, Any]) -> Dict[str, Any]:
-    normalized = dict(entry)
-    merged_relations: Dict[str, Any] = {}
-    explicit_relations = normalized.get("relations")
-    if isinstance(explicit_relations, dict):
-        merged_relations.update(explicit_relations)
-    for key in list(normalized.keys()):
-        if key in {
-            "label",
-            "iri",
-            "@id",
-            "@type",
-            "rdf_types",
-            "context",
-            "@context",
-            "attributes",
-            "relations",
-            "source_node",
-            "socket",
-        }:
-            continue
-        if key.startswith("@"):  # keep JSON-LD keywords intact
-            continue
-        merged_relations[key] = normalized.pop(key)
-    if merged_relations:
-        normalized["relations"] = merged_relations
-    return normalized
-
-
-def _extract_semantics(node: orm.Node) -> List[Dict[str, Any]]:
-    try:
-        semantics = node.base.extras.get("semantics")
-    except AttributeError:
-        semantics = None
-    if semantics is None:
-        return []
-    if isinstance(semantics, list):
-        return [
-            _normalize_semantics_entry(entry)
-            for entry in semantics
-            if isinstance(entry, dict)
-        ]
-    if isinstance(semantics, dict):
-        return [_normalize_semantics_entry(semantics)]
-    return []
-
-
-def _summarise_node_attributes(node: orm.Node) -> Dict[str, Any]:
-    summary: Dict[str, Any] = {}
-    if isinstance(node, orm.Dict):
-        payload = node.get_dict()
-        compact: Dict[str, Any] = {}
-        for key, value in payload.items():
-            if isinstance(value, (int, float, str, bool)):
-                compact[key] = value
-        if compact:
-            summary["dict"] = compact
-    if isinstance(node, orm.StructureData):  # type: ignore[attr-defined]
-        try:
-            summary["formula"] = node.get_formula()
-        except Exception:
-            pass
-    try:
-        value = getattr(node, "value", None)
-    except Exception:
-        value = None
-    if isinstance(value, (int, float, str)):
-        summary["value"] = value
-    return summary
-
-
-def _socketref_to_ref(ref: _SocketRef) -> Dict[str, Any]:
-    return {
-        "graph_uuid": ref.graph_uuid,
-        "task": ref.task_name,
-        "socket": ref.socket_path,
-        "direction": ref.kind,
-    }
-
-
-def _replace_socket_refs(value: Any) -> Any:
-    if isinstance(value, _SocketRef):
-        return _socketref_to_ref(value)
-    if isinstance(value, dict):
-        return {k: _replace_socket_refs(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        replaced = [_replace_socket_refs(v) for v in value]
-        return replaced if isinstance(value, list) else tuple(replaced)
-    return value
-
-
-def _merge_annotation(
-    base: Optional[SemanticsAnnotation], extra: Optional[SemanticsAnnotation]
-) -> Optional[SemanticsAnnotation]:
-    if base is None:
-        return extra
-    if extra is None:
-        return base
-    return base.merge(extra)
-
-
-def _merge_payload_annotations(
-    target: Dict[Tuple[str, str, str], SemanticsAnnotation],
-    payloads: Iterable[SemanticsPayload],
-) -> None:
-
-    def _sanitize_semantics(raw: Any) -> Any:
-        return _replace_socket_refs(raw)
-
-    for pending in payloads:
-        if not isinstance(pending, SemanticsPayload):
-            continue
-        subject = pending.subject
-        if not isinstance(subject, _SocketRef):
-            continue
-        key = (subject.task_name, subject.kind, subject.socket_path)
-        extra = SemanticsAnnotation.from_raw(_sanitize_semantics(pending.semantics))
-        if extra is None or extra.is_empty:
-            continue
-        target[key] = _merge_annotation(target.get(key), extra)
-
-
-def _merge_relation_annotations(
-    target: Dict[Tuple[str, str, str], SemanticsAnnotation],
-    relations: Iterable[SemanticsRelation],
-) -> None:
-    for relation in relations:
-        if not isinstance(relation, SemanticsRelation):
-            continue
-        subject = relation.subject
-        if not isinstance(subject, _SocketRef):
-            continue
-        key = (subject.task_name, subject.kind, subject.socket_path)
-        payload = {
-            "relations": {
-                relation.predicate: _replace_socket_refs(
-                    relation.values if len(relation.values) > 1 else relation.values[0]
-                )
-            }
-        }
-        if relation.label:
-            payload["label"] = relation.label
-        if relation.context:
-            payload["context"] = dict(relation.context)
-        extra = SemanticsAnnotation.from_raw(payload)
-        target[key] = _merge_annotation(target.get(key), extra)
-
-
-def _collect_socket_semantics(graph: Any) -> Dict[Tuple[str, str, str], SemanticsAnnotation]:
-    entries: Dict[Tuple[str, str, str], SemanticsAnnotation] = {}
-
-    for task in getattr(graph, "tasks", []) or []:
-        spec = getattr(task, "spec", None)
-        if spec is None:
-            continue
-        semantics = TaskSemantics.from_specs(spec.inputs, spec.outputs)
-        if semantics is None:
-            continue
-        entries.update(
-            _flatten_semantics_tree(
-                semantics.inputs,
-                task_name=getattr(task, "name", "<task>"),
-                direction="input",
-            )
-        )
-        entries.update(
-            _flatten_semantics_tree(
-                semantics.outputs,
-                task_name=getattr(task, "name", "<task>"),
-                direction="output",
-            )
-        )
-
-    pending_raw = graph.knowledge_graph.semantics_buffer
-    pending = _normalize_semantics_buffer(pending_raw)
-    _merge_payload_annotations(entries, pending.get("payloads", []))
-    _merge_relation_annotations(entries, pending.get("relations", []))
-    return entries
-
-
-def _jsonld_from_entries(
-    entries: Dict[Tuple[str, str, str], SemanticsAnnotation]
-) -> Dict[str, Any]:
-    jsonld_entries: List[Dict[str, Any]] = []
-    for (task_name, direction, socket_path), annotation in entries.items():
-        if annotation is None or annotation.is_empty:
-            continue
-        payload = _replace_socket_refs(annotation.to_jsonld())
-        payload["task"] = task_name
-        payload["direction"] = direction
-        payload["socket"] = socket_path
-        payload["@id"] = f"ng://{task_name}/{direction}/{socket_path or 'socket'}"
-        jsonld_entries.append(payload)
-    return {"@graph": jsonld_entries}
-
+    semantics = payload.get("semantics") or payload
+    serialized = json.dumps(semantics, sort_keys=True, default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 def build_workflow_knowledge_payload(
     *,
@@ -376,13 +197,18 @@ def build_workflow_knowledge_payload(
         definition = metadata["definition"]
     else:
         definition = metadata
-    entries = _collect_socket_semantics(graph)
-    if not entries:
-        return None
     identifier = definition.get("task_identifier") if isinstance(definition, dict) else None
     if identifier is None:
         identifier = getattr(graph, "name", None)
 
+    kg = graph.knowledge_graph.copy(graph_uuid=getattr(graph, "uuid", None))
+    kg._graph = graph
+    kg.update()
+    if not kg.entities and not kg.links:
+        return None
+
+    semantics_payload = kg.to_dict()
+    payload_hash = _hash_semantics_payload({"semantics": semantics_payload})
     payload: Dict[str, Any] = {
         "scope": "workflow",
         "workflow": {
@@ -396,9 +222,8 @@ def build_workflow_knowledge_payload(
             "package_version": definition.get("package_version") if isinstance(definition, dict) else None,
         },
         "engine_kind": engine_kind,
-        "semantics": {
-            "jsonld": _jsonld_from_entries(entries),
-        },
+        "semantics": semantics_payload,
+        "hash": payload_hash,
     }
     return payload
 
@@ -417,10 +242,8 @@ def persist_workflow_knowledge_graph(
     wf_meta = payload.get("workflow", {})
     knowledge, _ = KnowledgeGraphData.get_or_create_workflow(
         workflow_name=str(wf_meta.get("name") or graph.name),
-        callable_path=wf_meta.get("callable_path"),
-        package_version=wf_meta.get("package_version"),
-        identifier=wf_meta.get("identifier") or graph.name,
         payload=payload,
+        extras={"engine_kind": engine_kind},
     )
     try:
         process_node.base.extras.set("knowledge_graph_uuid", knowledge.uuid)
