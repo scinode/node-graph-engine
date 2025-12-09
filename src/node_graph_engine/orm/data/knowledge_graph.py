@@ -7,6 +7,7 @@ import hashlib
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from aiida import orm
+from aiida.common.links import LinkType
 from aiida.orm import QueryBuilder
 from node_graph.knowledge_graph import KnowledgeGraph
 
@@ -73,18 +74,9 @@ class KnowledgeGraphData(orm.Dict):
     @classmethod
     def _maybe_existing(cls, filters: Dict[str, Any]) -> Optional["KnowledgeGraphData"]:
         qb = QueryBuilder()
-        try:
-            qb.append(cls, filters=filters)
-            existing = qb.first()
-            return existing[0] if existing else None
-        except ValueError:
-            # SQLite backend cannot filter nested JSON; fall back to filtering in Python.
-            qb = QueryBuilder()
-            qb.append(cls)
-            for node, in qb.iterall():  # type: ignore[misc]
-                if cls._matches_filter_namespaces(node, filters):
-                    return node
-            return None
+        qb.append(cls, filters=filters)
+        existing = qb.first()
+        return existing[0] if existing else None
 
     @staticmethod
     def _matches_filter_namespaces(node: orm.Node, filters: Dict[str, Any]) -> bool:
@@ -127,17 +119,12 @@ class KnowledgeGraphData(orm.Dict):
     def get_or_create_workflow(
         cls,
         *,
-        workflow_name: str,
         payload: Dict[str, Any],
         extras: Optional[Dict[str, Any]] = None,
     ) -> Tuple["KnowledgeGraphData", bool]:
         kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
         filters: Dict[str, Any] = {
-            "attributes": {
-                "scope": "workflow",
-                "hash": kg_hash,
-                "workflow": {"name": workflow_name},
-            }
+            "attributes.hash": kg_hash
         }
 
         existing = cls._maybe_existing(filters)
@@ -146,8 +133,6 @@ class KnowledgeGraphData(orm.Dict):
 
         node = cls(dict=payload)
         meta: Dict[str, Any] = {
-            "scope": "workflow",
-            "workflow_name": workflow_name,
             "hash": kg_hash,
         }
         workflow_meta = payload.get("workflow") if isinstance(payload, dict) else {}
@@ -241,7 +226,6 @@ def persist_workflow_knowledge_graph(
         return None
     wf_meta = payload.get("workflow", {})
     knowledge, _ = KnowledgeGraphData.get_or_create_workflow(
-        workflow_name=str(wf_meta.get("name") or graph.name),
         payload=payload,
         extras={"engine_kind": engine_kind},
     )
@@ -249,4 +233,51 @@ def persist_workflow_knowledge_graph(
         process_node.base.extras.set("knowledge_graph_uuid", knowledge.uuid)
     except Exception:
         pass
+    _attach_semantics_references(process_node, knowledge_uuid=str(knowledge.uuid))
     return knowledge
+
+
+def _attach_semantics_references(
+    process_node: orm.ProcessNode, *, knowledge_uuid: str
+) -> None:
+    """
+    Record lightweight references from produced ``Data`` nodes to the knowledge graph.
+
+    This avoids storing full semantics payloads on every run while still letting
+    clients resolve the canonical socket/entity for a value.
+    """
+
+    visited: set[str] = set()
+
+    def _walk(proc: orm.ProcessNode) -> None:
+        for child in getattr(proc, "called", []) or []:
+            _walk(child)
+        outgoing = proc.base.links.get_outgoing(
+            link_type=(LinkType.CREATE, LinkType.RETURN)
+        )
+        for entry in outgoing:
+            node = entry.node
+            if not isinstance(node, orm.Data):
+                continue
+            if node.uuid in visited:
+                continue
+            visited.add(node.uuid)
+            process_label = getattr(proc, "process_label", None)
+            raw_label = entry.link_label
+            canonical_socket = raw_label
+            if process_label:
+                canonical_socket = f"{process_label}.output.{raw_label}"
+            # Replace ``__`` with ``.`` to match socket identifiers in the KG.
+            canonical_socket = canonical_socket.replace("__", ".")
+            ref = {
+                "knowledge_graph_uuid": str(knowledge_uuid),
+                "task": process_label,
+                "socket": raw_label,
+                "canonical_socket": canonical_socket,
+            }
+            try:
+                node.base.extras.set("semantics_ref", ref)
+            except Exception:
+                pass
+
+    _walk(process_node)

@@ -14,7 +14,6 @@ from ..core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from ..core.semantics import record_graph_semantics
 from ..core.task import EngineTaskExecutor
 from ..core.utils import (
     update_nested_dict_with_special_keys,
@@ -202,7 +201,6 @@ class JobflowEngine(BaseEngine):
                 link_builder=self._build_link_kwargs,
             )
             mark_process_success(process_node, graph_outputs)
-            record_graph_semantics(process_node, context.semantics)
             success = True
             return graph_outputs
         except Exception as e:

@@ -24,11 +24,8 @@ from node_graph.socket_spec import SocketSpec
 from node_graph.utils.graph import materialize_graph
 from plumpy import ProcessState
 
-from .semantics import (
-    TaskSemantics,
-    register_pending_semantics,
-    store_socket_semantics_from_links,
-)
+from node_graph.semantics import TaskSemantics
+
 from .task import TaskMeta
 from .utils import (
     _decode_runtime_inputs,
@@ -204,9 +201,6 @@ def execute_task_job(
                 process_node.set_process_state(ProcessState.EXCEPTED)
             else:
                 update_outputs(process_node, outputs)
-                store_socket_semantics_from_links(process_node, meta_obj.semantics)
-                if parent_calc_node is not None:
-                    register_pending_semantics(process_node, meta_obj.semantics)
                 process_node.set_process_state(ProcessState.FINISHED)
                 process_node.set_exit_status(0)
             process_node.seal()

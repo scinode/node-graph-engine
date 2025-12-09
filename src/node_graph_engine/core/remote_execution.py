@@ -29,7 +29,7 @@ from ..core.execution import (
     _ensure_meta,
     _resolve_callable,
 )
-from ..core.semantics import TaskSemantics, store_socket_semantics_from_links
+
 from ..core.utils import (
     _decode_runtime_inputs,
     _encode_runtime_inputs,
@@ -192,8 +192,6 @@ async def _execute_pythonjob_remote(
         node.set_process_state(ProcessState.FINISHED)
 
         process.update_outputs()
-        semantics_spec = TaskSemantics.from_dict(meta_dict.get("semantics"))
-        store_socket_semantics_from_links(node, semantics_spec)
         outgoing = node.base.links.get_outgoing()
         flattened: Dict[str, Any] = {
             entry.link_label.replace(PORT_NAMESPACE_SEPARATOR, "."): entry.node

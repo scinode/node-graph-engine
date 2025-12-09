@@ -17,7 +17,7 @@ from node_graph_engine.core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from node_graph_engine.core.semantics import TaskSemantics, record_graph_semantics
+
 from node_graph_engine.core.utils import (
     close_threadlocal_aiida_session,
     ensure_aiida_profile,
@@ -325,8 +325,6 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         raise RuntimeError("Graph runtime context did not provide a graph PID")
 
     process_node = orm.load_node(graph_pid)
-    semantics_spec = TaskSemantics.from_dict(runtime_context.get("semantics"))
-    graph_uuid = runtime_context.get("graph_uuid")
 
     graph_proxy = None
     try:
@@ -340,7 +338,7 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
 
     success = False
     if process_node.is_excepted:
-                if not process_node.is_sealed:
+        if not process_node.is_sealed:
             process_node.seal()
         raise RuntimeError("Graph execution failed; see upstream task logs for details")
 
@@ -363,7 +361,6 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
             ),
         )
         mark_process_success(process_node, graph_outputs)
-        record_graph_semantics(process_node, semantics_spec)
         success = True
         if result_path_str:
             try:
@@ -392,7 +389,7 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         mark_process_failure(process_node, exc)
         raise
     finally:
-                if success and graph_proxy is not None:
+        if success and graph_proxy is not None:
             try:
                 persist_workflow_knowledge_graph(
                     process_node=process_node,

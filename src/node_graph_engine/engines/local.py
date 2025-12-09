@@ -12,7 +12,6 @@ from ..core.execution import (
     prepare_graph_run,
 )
 from ..core.remote_execution import _remote_task_job
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
 from ..core.task import EngineTaskExecutor
 from ..core.utils import (
     _collect_literals,
@@ -114,7 +113,6 @@ class LocalEngine(BaseEngine):
             process_node = orm.load_node(self._graph_pid)
             context.process_node = process_node
             mark_process_success(context.process_node, graph_outputs)
-            record_graph_semantics(context.process_node, context.semantics)
             success = True
             return graph_outputs
         except Exception as e:

@@ -28,7 +28,7 @@ from ..core.execution import (
     prepare_graph_run,
     _scan_links_topology,
 )
-from ..core.semantics import TaskSemantics, record_graph_semantics
+from ..core.semantics import TaskSemantics
 from ..core.task import EngineTaskExecutor, TaskMeta
 from ..core.utils import (
     _collect_literals,
@@ -363,7 +363,6 @@ class DagsterEngine(BaseEngine):
                     link_builder=self._build_link_kwargs,
                 )
                 mark_process_success(process_node, graph_outputs)
-                record_graph_semantics(process_node, semantics_spec)
                 self._finalize_run(process_node)
                 success = True
             except Exception as exc:
