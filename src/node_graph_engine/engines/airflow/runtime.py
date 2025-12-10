@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -315,6 +316,19 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
     result_path_str: Optional[str] = None
     if dag_run is not None and getattr(dag_run, "conf", None):
         result_path_str = dag_run.conf.get("ng_result_path")
+    if result_path_str is None and dag_run is not None:
+        try:
+            from pathlib import Path
+
+            airflow_home = Path(
+                os.environ.get("AIRFLOW_HOME", Path.home() / "airflow")
+            )
+            run_root = airflow_home / "ng_subgraph_runs"
+            fallback_path = run_root / dag_run.dag_id / dag_run.run_id / "result.json"
+            result_path_str = str(fallback_path)
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            result_path_str = None
 
     runtime_context = ti.xcom_pull(task_ids=runtime_context_task_id)
     if not runtime_context:

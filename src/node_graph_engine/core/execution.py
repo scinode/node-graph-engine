@@ -238,7 +238,11 @@ def execute_task_job(
     if schedule_subgraphs:
         if hasattr(sub_engine, "submit"):
             results = sub_engine.submit(
-                sub_ng, parent_pid=parent_pid, task_context=task_context, wait=True
+                sub_ng,
+                parent_pid=parent_pid,
+                task_context=task_context,
+                wait=True,
+                force_trigger=False,
             )
             if results is None:
                 raise RuntimeError(
