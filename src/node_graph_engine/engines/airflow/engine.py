@@ -6,6 +6,7 @@ import inspect
 import logging
 import os
 import uuid
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,7 @@ from .scheduler import (
     _build_scheduler_payload,
     _trigger_registered_dag,
     _poll_for_result,
+    _poll_for_scheduled_result,
     _prepare_run_artifacts,
     _register_generated_dag,
     _render_generated_dag,
@@ -165,6 +167,10 @@ class AirflowEngine(BaseEngine):
             incoming_specs_for_node = incoming_specs.get(name, [])
             is_async_callable = _callable_is_async(callable_payload)
             if task_type.lower() == "remotefunction":
+                is_async_callable = True
+            if task_type.lower() == "graph" and schedule_subgraphs:
+                # Treat sub-graph tasks as async so we can defer to a triggerer
+                # instead of blocking a worker while waiting for the scheduler.
                 is_async_callable = True
             op_kwargs = {
                 "_ng_meta": self._build_node_task_meta(task, label_kind).as_dict(),
@@ -305,9 +311,12 @@ class AirflowEngine(BaseEngine):
         self,
         ng: Graph,
         parent_pid: Optional[str] = None,
-        force_trigger: bool = False,
+        force_trigger: Optional[bool] = None,
         wait: bool = False,
+        task_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
+        # ``task_context`` is accepted for interface compatibility with sub-graph execution.
+        _ = task_context
         try:
             from aiida.orm.utils.serialize import deserialize_unsafe, serialize
         except Exception as exc:
@@ -315,8 +324,9 @@ class AirflowEngine(BaseEngine):
                 "Airflow scheduler components are required to schedule sub-graphs"
             ) from exc
 
-        if wait:
-            # Waiting implies we need to create and trigger a run immediately.
+        if wait and force_trigger is None:
+            # Waiting implies we need to create and trigger a run immediately unless
+            # explicitly disabled by the caller.
             force_trigger = True
 
         self._profile_name = get_active_profile_name()
@@ -337,7 +347,10 @@ class AirflowEngine(BaseEngine):
         effective_start_date = self.start_date or (
             datetime.now(timezone.utc) - timedelta(minutes=1)
         )
-        schedule_for_submit = self.schedule or "@once"
+        # Default to a one-off schedule only when we rely on the scheduler to trigger.
+        schedule_for_submit = self.schedule
+        if schedule_for_submit is None and not force_trigger:
+            schedule_for_submit = "@once"
 
         payload_blob = _build_scheduler_payload(
             dag_id=dag_id,
@@ -368,15 +381,17 @@ class AirflowEngine(BaseEngine):
             )
             return None
 
+        poll_interval = float(os.environ.get("NG_AIRFLOW_POLL_INTERVAL", 2.0))
+
         if force_trigger:
             run_id = f"{uuid.uuid4().hex}"
             artifacts = _prepare_run_artifacts(
                 paths=paths, dag_id=dag_id, run_id=run_id, parent_pid=parent_pid
             )
 
-            dag_obj = _register_generated_dag(dag_id, dag_path, paths.dags_dir)
-
-            poll_interval = float(os.environ.get("NG_AIRFLOW_POLL_INTERVAL", 2.0))
+            dag_obj, dag_persisted = _register_generated_dag(
+                dag_id, dag_path, paths.dags_dir
+            )
 
             triggered, trigger_error = _trigger_registered_dag(
                 dag_id=dag_id,
@@ -384,12 +399,31 @@ class AirflowEngine(BaseEngine):
                 run_id=artifacts.run_id,
                 run_conf=artifacts.run_conf,
                 dag=dag_obj,
+                dag_persisted=dag_persisted,
             )
             if not triggered:
                 raise RuntimeError(
                     f"Failed to trigger Airflow DAG '{dag_id}' run '{artifacts.run_id}'"
                 ) from trigger_error
         if wait:
+            # If we did not force-trigger, rely on the scheduler to create the DAG run
+            # and poll for the result written by finalize_task.
+            if not force_trigger:
+                payload = _poll_for_scheduled_result(
+                    dag_id=dag_id,
+                    run_root=paths.run_root,
+                    poll_interval=poll_interval,
+                    deserialize_fn=deserialize_unsafe,
+                    started_at_epoch=time.time(),
+                )
+                graph_pid = payload.get("graph_pid")
+                if graph_pid:
+                    self._graph_pid = graph_pid
+                outputs = payload.get("outputs")
+                if not isinstance(outputs, dict):
+                    outputs = {}
+                return outputs
+
             payload = _poll_for_result(
                 run_id=run_id,
                 result_path=artifacts.result_path,

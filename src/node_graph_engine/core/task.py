@@ -6,7 +6,7 @@ from typing import Any, Callable, Dict, Mapping, Optional, Union
 from node_graph.socket import TaggedValue
 from node_graph.socket_spec import SocketSpec
 
-from .semantics import TaskSemantics
+from node_graph.semantics import TaskSemantics
 
 
 def _coerce_outputs_spec(spec: Any) -> Optional[SocketSpec]:

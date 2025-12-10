@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Set
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Set, Union
 from collections import defaultdict, deque
 from node_graph.link import TaskLink
 from node_graph import Graph
@@ -457,3 +457,77 @@ def setup_inputs(task: orm.ProcessNode, inputs: dict) -> None:
             task.base.links.add_incoming(data, LinkType.INPUT_CALC, name)
         elif isinstance(task, orm.WorkflowNode):
             task.base.links.add_incoming(data, LinkType.INPUT_WORK, name)
+
+def UnavailableExecutor(*args, **kwargs):
+    raise RuntimeError('This executor was defined dynamically and is not available from the database snapshot.')
+
+
+def clean_pickled_task_executor(tdata: Dict[str, Any]) -> None:
+    """Clean the pickled executor in the task data."""
+    from node_graph.executor import RuntimeExecutor
+
+    # spec
+    if 'spec' in tdata:
+        executor = tdata['spec'].get('executor', {})
+        if executor.get('mode', '') == 'pickled_callable':
+            tdata['spec']['executor'] = RuntimeExecutor.from_callable(UnavailableExecutor).to_dict()
+        if executor.get('mode', '') == 'graph':
+            ngdata = executor['graph_data']
+            for task in ngdata['tasks'].values():
+                clean_pickled_task_executor(task)
+    # error handler
+    for name, handler in tdata.get('error_handlers', {}).items():
+        if handler.get('mode', '') == 'pickled_callable':
+            tdata['error_handlers'][name] = RuntimeExecutor.from_callable(UnavailableExecutor).to_dict()
+
+
+def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -> None:
+    from aiida.orm.utils.serialize import serialize
+    from aiida_pythonjob.utils import serialize_ports
+
+    ngdata = ng.to_dict(should_serialize=True)
+    task_inputs = {}
+    for name, task in ngdata['tasks'].items():
+        # clean pickled executor before save to database
+        task_inputs[name] = task.pop('inputs', {})
+        clean_pickled_task_executor(task)
+    node.nodegraph_data = ngdata
+    graph_inputs = task_inputs.pop('graph_inputs', {})
+    serialize_kwargs = {
+        "python_data": graph_inputs,
+        "port_schema": ng.spec.inputs,
+    }
+    if user is not None:
+        serialize_kwargs["user"] = user
+    graph_inputs = serialize_ports(**serialize_kwargs)
+    setup_inputs(node, graph_inputs)
+    task_inputs['graph_inputs'] = graph_inputs
+    node.task_inputs = serialize(task_inputs)
+    node.set_checkpoint(serialize(ngdata))
+    return graph_inputs
+
+
+
+def load_nodegraph_data(node: Union[int, orm.Node]) -> Optional[Dict[str, Any]]:
+    """
+    Get the nodegraph data from the given process node.
+    """
+    from aiida.orm import load_node
+    from .serialize import deserialize_safe
+    import yaml
+
+
+    if isinstance(node, int):
+        node = load_node(node)
+    ngdata = node.base.attributes.get("nodegraph_data", None)
+    try:
+        task_inputs = deserialize_safe(node.task_inputs or '')
+    except (yaml.constructor.ConstructorError, yaml.YAMLError):
+        print(
+            'Info: could not deserialize inputs.The nodegraph is still loaded and you can inspect tasks and outputs. '
+        )
+        task_inputs = {}
+
+    for name, data in task_inputs.items():
+        ngdata['tasks'][name]['inputs'] = data
+    return ngdata

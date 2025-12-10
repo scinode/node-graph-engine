@@ -15,7 +15,6 @@ from ..core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
 from ..core.remote_execution import _remote_task_job
 from ..core.task import EngineTaskExecutor, TaskMeta
 from ..core.utils import (
@@ -28,6 +27,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 from prefect.task_runners import ThreadPoolTaskRunner
 from prefect.futures import PrefectFuture
 from prefect.states import State
@@ -263,16 +263,18 @@ class PrefectEngine(BaseEngine):
                 link_builder=self._build_link_kwargs,
             )
             mark_process_success(context.process_node, graph_outputs)
-            record_graph_semantics(context.process_node, context.semantics)
             success = True
             return graph_outputs
         except Exception as e:
             mark_process_failure(context.process_node, e)
             raise
         finally:
-            finalize_pending_semantics(
-                context.process_node, context.ng, success=success
-            )
+            if success:
+                persist_workflow_knowledge_graph(
+                    process_node=context.process_node,
+                    graph=context.ng,
+                    engine_kind=self.engine_kind,
+                )
             context.process_node.seal()
 
     def _resolve_state(self, value: Any) -> Any:

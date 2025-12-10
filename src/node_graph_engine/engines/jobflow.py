@@ -14,7 +14,6 @@ from ..core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
 from ..core.task import EngineTaskExecutor
 from ..core.utils import (
     update_nested_dict_with_special_keys,
@@ -24,6 +23,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 
 from jobflow import Flow, job, run_locally
 from jobflow.core.job import Job
@@ -201,7 +201,6 @@ class JobflowEngine(BaseEngine):
                 link_builder=self._build_link_kwargs,
             )
             mark_process_success(process_node, graph_outputs)
-            record_graph_semantics(process_node, context.semantics)
             success = True
             return graph_outputs
         except Exception as e:
@@ -210,7 +209,12 @@ class JobflowEngine(BaseEngine):
             raise
         finally:
             try:
-                finalize_pending_semantics(process_node, ng, success=success)
+                if success:
+                    persist_workflow_knowledge_graph(
+                        process_node=process_node,
+                        graph=ng,
+                        engine_kind=self.engine_kind,
+                    )
                 process_node.seal()
             except Exception:
                 pass

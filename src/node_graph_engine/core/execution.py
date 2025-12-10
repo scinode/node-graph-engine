@@ -16,7 +16,6 @@ from aiida_pythonjob.calculations.pyfunction import PyFunction
 from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
 from aiida_pythonjob.data.serializer import all_serializers
 from aiida_pythonjob.parsers.utils import parse_outputs
-from aiida_pythonjob.utils import serialize_ports
 from node_graph import Graph, task
 from node_graph.executor import RuntimeExecutor
 from node_graph.graph import BUILTIN_TASKS
@@ -25,11 +24,8 @@ from node_graph.socket_spec import SocketSpec
 from node_graph.utils.graph import materialize_graph
 from plumpy import ProcessState
 
-from .semantics import (
-    TaskSemantics,
-    register_pending_semantics,
-    store_socket_semantics_from_links,
-)
+from node_graph.semantics import TaskSemantics
+
 from .task import TaskMeta
 from .utils import (
     _decode_runtime_inputs,
@@ -87,27 +83,19 @@ def prepare_graph_run(
     user: Optional[orm.User] = None,
     encode_graph_inputs: bool = False,
 ) -> GraphRunContext:
+    from node_graph_engine.orm.node_graph import NodeGraphNode
+    from .utils import save_nodegraph_data
     order, incoming, required = _scan_links_topology(ng)
     parent_node = orm.load_node(parent_pid) if parent_pid else None
     workflow_kwargs = {"user": user} if user is not None else {}
-    process_node = orm.WorkflowNode(**workflow_kwargs)
+    process_node = NodeGraphNode(**workflow_kwargs)
     if parent_node is not None:
         process_node.base.links.add_incoming(
             parent_node, LinkType.CALL_WORK, link_label=ng.name
         )
     process_node.set_process_label(f"Graph<{ng.name}>")
     process_node.set_process_state(ProcessState.RUNNING)
-    graph_data = ng.to_dict(include_sockets=True, should_serialize=True)
-    process_node.set_checkpoint(serialize(graph_data))
-    inputs = ng.inputs._collect_values(raw=True)
-    serialize_kwargs = {
-        "python_data": inputs,
-        "port_schema": ng.spec.inputs,
-    }
-    if user is not None:
-        serialize_kwargs["user"] = user
-    inputs = serialize_ports(**serialize_kwargs)
-    setup_inputs(process_node, inputs)
+    inputs = save_nodegraph_data(process_node, ng, user)
     process_node.store()
     values_payload: Dict[str, Any]
     if encode_graph_inputs:
@@ -213,9 +201,6 @@ def execute_task_job(
                 process_node.set_process_state(ProcessState.EXCEPTED)
             else:
                 update_outputs(process_node, outputs)
-                store_socket_semantics_from_links(process_node, meta_obj.semantics)
-                if parent_calc_node is not None:
-                    register_pending_semantics(process_node, meta_obj.semantics)
                 process_node.set_process_state(ProcessState.FINISHED)
                 process_node.set_exit_status(0)
             process_node.seal()
@@ -253,7 +238,11 @@ def execute_task_job(
     if schedule_subgraphs:
         if hasattr(sub_engine, "submit"):
             results = sub_engine.submit(
-                sub_ng, parent_pid=parent_pid, task_context=task_context, wait=True
+                sub_ng,
+                parent_pid=parent_pid,
+                task_context=task_context,
+                wait=True,
+                force_trigger=False,
             )
             if results is None:
                 raise RuntimeError(

@@ -40,4 +40,5 @@ Outline
    engines/index
    autogen/remote_node
    autogen/ontology_semantics
+   tutorial/knowledge_graphs
    eos_workflow

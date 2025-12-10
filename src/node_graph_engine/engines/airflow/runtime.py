@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -17,11 +18,7 @@ from node_graph_engine.core.execution import (
     mark_process_success,
     prepare_graph_run,
 )
-from node_graph_engine.core.semantics import (
-    TaskSemantics,
-    finalize_pending_semantics,
-    record_graph_semantics,
-)
+
 from node_graph_engine.core.utils import (
     close_threadlocal_aiida_session,
     ensure_aiida_profile,
@@ -29,8 +26,10 @@ from node_graph_engine.core.utils import (
     get_default_user_email,
     get_nested_dict,
     load_default_user,
+    load_nodegraph_data,
     update_nested_dict_with_special_keys,
 )
+from node_graph_engine.orm.data.knowledge_graph import persist_workflow_knowledge_graph
 from node_graph_engine.core.task import TaskMeta
 
 from .async_request import AsyncNodeExecutionRequest
@@ -294,17 +293,10 @@ def airflow_init_task(**context: Any) -> Dict[str, Any]:
         if graph_context.semantics is not None
         else None
     )
-    pending_semantics = getattr(ng, "semantics_buffer", None)
-    if pending_semantics is not None:
-        from node_graph.semantics import serialize_semantics_buffer
-
-        pending_semantics = serialize_semantics_buffer(pending_semantics)
-
     return {
         "graph_pid": graph_context.process_node.uuid,
         "values": dict(graph_context.values),
         "semantics": semantics_data,
-        "semantics_buffer": pending_semantics,
         "graph_uuid": ng.uuid,
     }
 
@@ -324,6 +316,19 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
     result_path_str: Optional[str] = None
     if dag_run is not None and getattr(dag_run, "conf", None):
         result_path_str = dag_run.conf.get("ng_result_path")
+    if result_path_str is None and dag_run is not None:
+        try:
+            from pathlib import Path
+
+            airflow_home = Path(
+                os.environ.get("AIRFLOW_HOME", Path.home() / "airflow")
+            )
+            run_root = airflow_home / "ng_subgraph_runs"
+            fallback_path = run_root / dag_run.dag_id / dag_run.run_id / "result.json"
+            result_path_str = str(fallback_path)
+            fallback_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            result_path_str = None
 
     runtime_context = ti.xcom_pull(task_ids=runtime_context_task_id)
     if not runtime_context:
@@ -334,24 +339,19 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         raise RuntimeError("Graph runtime context did not provide a graph PID")
 
     process_node = orm.load_node(graph_pid)
-    semantics_spec = TaskSemantics.from_dict(runtime_context.get("semantics"))
-    pending_payload = runtime_context.get("semantics_buffer")
-    graph_uuid = runtime_context.get("graph_uuid")
 
-    class _GraphProxy:
-        def __init__(self, uuid: Optional[str], pending: Any) -> None:
-            self.uuid = uuid or "<graph>"
-            setattr(self, "semantics_buffer", pending)
-
-    graph_proxy = (
-        _GraphProxy(graph_uuid, pending_payload)
-        if pending_payload is not None
-        else None
-    )
+    graph_proxy = None
+    try:
+        ngdata = load_nodegraph_data(process_node)
+        if ngdata:
+            graph_proxy = Graph.from_dict(ngdata)
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "Failed to rebuild graph %s for knowledge graph persistence", graph_pid
+        )
 
     success = False
     if process_node.is_excepted:
-        finalize_pending_semantics(process_node, graph_proxy, success=success)
         if not process_node.is_sealed:
             process_node.seal()
         raise RuntimeError("Graph execution failed; see upstream task logs for details")
@@ -375,7 +375,6 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
             ),
         )
         mark_process_success(process_node, graph_outputs)
-        record_graph_semantics(process_node, semantics_spec)
         success = True
         if result_path_str:
             try:
@@ -404,6 +403,16 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         mark_process_failure(process_node, exc)
         raise
     finally:
-        finalize_pending_semantics(process_node, graph_proxy, success=success)
+        if success and graph_proxy is not None:
+            try:
+                persist_workflow_knowledge_graph(
+                    process_node=process_node,
+                    graph=graph_proxy,
+                    engine_kind="airflow",
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Failed to persist workflow knowledge graph for %s", process_node
+                )
         if not process_node.is_sealed:
             process_node.seal()

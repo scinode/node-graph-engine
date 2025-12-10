@@ -95,3 +95,9 @@ engines = [
     "celery~=5.3",
     "redis>=4.5,<6",
 ]
+
+[project.entry-points."aiida.data"]
+"node_graph_engine.knowledge_graph_data" = "node_graph_engine.orm.data.knowledge_graph:KnowledgeGraphData"
+
+[project.entry-points."aiida.node"]
+"process.workflow.nodegraph" = "node_graph_engine.orm.node_graph:NodeGraphNode"

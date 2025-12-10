@@ -12,13 +12,13 @@ from ..core.execution import (
     prepare_graph_run,
 )
 from ..core.remote_execution import _remote_task_job
-from ..core.semantics import finalize_pending_semantics, record_graph_semantics
 from ..core.task import EngineTaskExecutor
 from ..core.utils import (
     _collect_literals,
     close_threadlocal_aiida_session,
     update_nested_dict_with_special_keys,
 )
+from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
 from aiida import orm
 
 
@@ -113,16 +113,18 @@ class LocalEngine(BaseEngine):
             process_node = orm.load_node(self._graph_pid)
             context.process_node = process_node
             mark_process_success(context.process_node, graph_outputs)
-            record_graph_semantics(context.process_node, context.semantics)
             success = True
             return graph_outputs
         except Exception as e:
             mark_process_failure(context.process_node, e)
             raise
         finally:
-            finalize_pending_semantics(
-                context.process_node, context.ng, success=success
-            )
+            if success:
+                persist_workflow_knowledge_graph(
+                    process_node=context.process_node,
+                    graph=context.ng,
+                    engine_kind=self.engine_kind,
+                )
             context.process_node.seal()
 
     def _build_task_executor(

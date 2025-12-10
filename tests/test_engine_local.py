@@ -4,8 +4,9 @@ from aiida import orm
 from node_graph import task
 from node_graph.socket_spec import meta
 from node_graph.semantics import SemanticTag
-from node_graph.semantics import attach_semantics
+from node_graph.semantics import attach_semantics, attribute_ref
 from node_graph_engine.engines.local import LocalEngine
+from node_graph_engine.orm.data.knowledge_graph import KnowledgeGraphData
 from typing import Annotated, Dict, List
 
 
@@ -64,6 +65,17 @@ SEMANTICS_TAG_EXAMPLE = SemanticTag(
 )
 
 
+def _load_knowledge_graph(process_node: orm.ProcessNode):
+    """Return (KG node, semantics payload) for the workflow."""
+
+    kg_uuid = process_node.base.extras.get("knowledge_graph_uuid")
+    assert kg_uuid is not None
+    kg = orm.load_node(kg_uuid)
+    payload = kg.get_dict()
+    semantics = payload.get("semantics") or payload
+    return kg, semantics
+
+
 def test_nested_graph(nested_graph) -> None:
     """Test execution of a nested graph using the LocalEngine."""
     ng = nested_graph.build(x=1, y=2, z=3)
@@ -113,15 +125,11 @@ def test_socket_semantics_roundtrip() -> None:
     result_node = outputs["result"]
     assert isinstance(result_node, orm.Float)
 
-    result_semantics = result_node.base.extras.get("semantics")
-    assert isinstance(result_semantics, list)
-    result_record = result_semantics[0]
-    assert result_record["@context"]["qudt"] == "http://qudt.org/schema/qudt/"
-    assert result_record["@id"] == "qudt:PotentialEnergy"
-    assert result_record["@type"] == ["qudt:QuantityValue"]
-    assert result_record["label"] == "Cohesive energy"
-    assert result_record["qudt:unit"] == "qudt-unit:EV"
-    assert result_record["socket"] == "result"
+    # Per-run semantics are referenced via the workflow knowledge graph to avoid
+    # duplicating JSON-LD on every Data node.
+    assert "semantics" not in result_node.base.extras.all
+    ref = result_node.base.extras.get("semantics_ref")
+    assert ref["canonical_socket"] == "compute_energy.output.result"
 
     calc_node = result_node.creator
     assert calc_node is not None
@@ -129,6 +137,45 @@ def test_socket_semantics_roundtrip() -> None:
 
     workflow_node = orm.load_node(engine._graph_pid)
     assert "semantics" not in workflow_node.base.extras.all
+    _, semantics = _load_knowledge_graph(workflow_node)
+    socket_meta = semantics["sockets"]["compute_energy.output.result"]
+    assert socket_meta["label"] == "Cohesive energy"
+    triples = semantics.get("triples", [])
+    assert ["compute_energy.output.result", "qudt:unit", "qudt-unit:EV"] in triples
+
+
+def test_attribute_ref_defaults_to_subject_node() -> None:
+    @task()
+    def emit_number() -> Annotated[
+        float,
+        meta(
+            semantics={
+                "label": "Number",
+                "attributes": {"schema:value": attribute_ref("value")},
+            }
+        ),
+    ]:
+        return 3.5
+
+    @task.graph()
+    def flow():
+        return emit_number().result
+
+    engine = LocalEngine()
+    outputs = engine.run(flow.build())
+    node = outputs["result"]
+    assert "semantics" not in node.base.extras.all
+    ref = node.base.extras.get("semantics_ref")
+    assert "canonical_socket" in ref
+    workflow_node = orm.load_node(engine._graph_pid)
+    _, semantics = _load_knowledge_graph(workflow_node)
+    socket_entry = semantics["sockets"][ref["canonical_socket"]]
+    # Attribute refs remain recorded in the KG semantics attributes.
+    triples = semantics.get("triples", [])
+    assert any(
+        triple[0] == ref["canonical_socket"] and triple[1] == "schema:value"
+        for triple in triples
+    )
 
 
 def test_semantics_accepts_pydantic_tag() -> None:
@@ -143,11 +190,14 @@ def test_semantics_accepts_pydantic_tag() -> None:
     engine = LocalEngine()
     outputs = engine.run(energy_flow.build())
     result_node = outputs["result"]
-    semantics = result_node.base.extras.get("semantics")
-    assert isinstance(semantics, list)
-    record = semantics[0]
-    assert record["qudt:unit"] == "qudt-unit:EV"
-    assert record["@context"]["qudt"] == "http://qudt.org/schema/qudt/"
+    assert result_node.base.extras.get("semantics") is None
+    ref = result_node.base.extras.get("semantics_ref")
+    workflow_node = orm.load_node(engine._graph_pid)
+    _, semantics = _load_knowledge_graph(workflow_node)
+    socket_meta = semantics["sockets"][ref["canonical_socket"]]
+    assert socket_meta["label"] == "Cohesive energy"
+    triples = semantics.get("triples", [])
+    assert ["compute_energy.output.result", "qudt:unit", "qudt-unit:EV"] in triples
 
 
 def test_input_socket_semantics() -> None:
@@ -171,24 +221,10 @@ def test_input_socket_semantics() -> None:
     engine.run(energy_flow.build())
 
     workflow_node = orm.load_node(engine._graph_pid)
-    compute_proc = next(
-        task for task in workflow_node.called if task.process_label == "compute_energy"
-    )
-    intermediate_node = compute_proc.outputs.result
-    semantics_records = intermediate_node.base.extras.get("semantics")
-    assert isinstance(semantics_records, list)
-    labels = {entry["label"] for entry in semantics_records}
+    _, semantics = _load_knowledge_graph(workflow_node)
+    sockets = semantics["sockets"]
+    labels = {meta.get("label") for meta in sockets.values()}
     assert {"Cohesive energy", "Thermal energy"} <= labels
-
-    producer_entry = next(
-        entry for entry in semantics_records if entry["label"] == "Cohesive energy"
-    )
-    assert producer_entry["socket"] == "result"
-
-    consumer_entry = next(
-        entry for entry in semantics_records if entry["label"] == "Thermal energy"
-    )
-    assert consumer_entry["socket"] == "value"
 
 
 def test_input_semantics_can_reference_outputs() -> None:
@@ -209,21 +245,10 @@ def test_input_semantics_can_reference_outputs() -> None:
     engine = LocalEngine()
     engine.run(band_structure_workflow.build(structure=structure))
 
-    stored_structure = orm.load_node(structure_uuid)
-    semantics_records = stored_structure.base.extras.get("semantics")
-    assert isinstance(semantics_records, list)
-    entry = next(
-        record
-        for record in semantics_records
-        if record["label"] == STRUCTURE_PROPERTY_SEMANTICS["label"]
-    )
-    relation_value = entry["mat:hasProperty"]
-    assert isinstance(relation_value, list)
-    assert len(relation_value) == 1
-    target = relation_value[0]
-    assert target["node_type"] == "Dict"
-    assert target["label"] == "Band structure property"
-    assert target["@id"].startswith("aiida://node/")
+    workflow_node = orm.load_node(engine._graph_pid)
+    _, semantics = _load_knowledge_graph(workflow_node)
+    triples = semantics.get("triples", [])
+    assert any("mat:hasProperty" in triple[1] for triple in triples)
 
 
 STRUCTURE_SEMANTICS = meta(
@@ -256,14 +281,10 @@ def test_semantics_without_annotated_meta() -> None:
 
     engine = LocalEngine()
     engine.run(workflow.build(structure="test"))
-    structure_node = orm.load_node(engine._graph_pid).inputs.structure
-
-    structure_semantics = structure_node.base.extras.get("semantics")
-    assert isinstance(structure_semantics, list)
-    print("structure_semantics:", structure_semantics)
-    assert {entry.get("label") for entry in structure_semantics} == {
-        "Crystal structure"
-    }
+    workflow_node = orm.load_node(engine._graph_pid)
+    _, semantics = _load_knowledge_graph(workflow_node)
+    labels = {meta.get("label") for meta in semantics.get("sockets", {}).values()}
+    assert "Crystal structure" in labels
 
 
 def test_manual_semantics_attachment_handles_multiple_properties() -> None:
@@ -331,40 +352,13 @@ def test_manual_semantics_attachment_handles_multiple_properties() -> None:
     engine.run(structure_workflow.build(structure=root_structure))
 
     workflow_node = orm.load_node(engine._graph_pid)
-    generated_structures = [
-        call.outputs.result
-        for call in workflow_node.called
-        if call.process_label.startswith("generate_new_structure")
+    _, semantics = _load_knowledge_graph(workflow_node)
+    triples = semantics.get("triples", [])
+    property_triples = [
+        t for t in triples if t[1] == "mat:hasProperty"
     ]
-    assert len(generated_structures) == 2
-
-    property_ids_by_structure: Dict[str, List[str]] = {}
-    for call in workflow_node.called:
-        if call.process_label.startswith("compute_band_structure"):
-            structure_node = call.inputs.structure
-            property_ids_by_structure.setdefault(structure_node.uuid, []).append(
-                call.outputs.result.uuid
-            )
-        if call.process_label.startswith("compute_density_of_states"):
-            structure_node = call.inputs.structure
-            property_ids_by_structure.setdefault(structure_node.uuid, []).append(
-                call.outputs.result.uuid
-            )
-
-    for struct in generated_structures:
-        struct = orm.load_node(struct.uuid)
-        semantics_records = struct.base.extras.get("semantics")
-        assert isinstance(semantics_records, list)
-        entry = next(
-            record
-            for record in semantics_records
-            if record["label"] == MANUAL_STRUCTURE_SEMANTICS["label"]
-        )
-        relation_value = entry["relations"]["mat:hasProperty"]
-        assert isinstance(relation_value, list)
-        assert len(relation_value) == 2
-        recorded_targets = {target["@id"] for target in relation_value}
-        expected_targets = {
-            f"aiida://node/{uuid}" for uuid in property_ids_by_structure[struct.uuid]
-        }
-        assert recorded_targets == expected_targets
+    assert len(property_triples) >= 4
+    # Ensure both band structure and DOS properties were linked.
+    objects = {t[2] for t in property_triples}
+    assert any("compute_band_structure.output.result" in obj for obj in objects)
+    assert any("compute_density_of_states.output.result" in obj for obj in objects)

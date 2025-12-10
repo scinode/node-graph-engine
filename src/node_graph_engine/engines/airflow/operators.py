@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, Optional
 
 from airflow.exceptions import AirflowException
-from airflow.models.baseoperator import BaseOperator
+from airflow.sdk.bases.operator import BaseOperator
 
 from .async_request import AsyncNodeExecutionRequest, GraphAsyncTrigger
 

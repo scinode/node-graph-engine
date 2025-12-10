@@ -11,6 +11,7 @@ import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from airflow import DAG
+from airflow.utils import timezone
 from node_graph import Graph
 
 from .common import SchedulerPaths, SchedulerRunArtifacts
@@ -137,7 +138,7 @@ def _write_dag_file(dag_path, dag_source: str) -> None:
     os.replace(tmp_path, dag_path)
 
 
-def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> DAG:
+def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> Tuple[DAG, bool]:
     """Load the generated DAG into a DagBag and persist it to the metadata DB."""
 
     from pathlib import Path
@@ -147,6 +148,7 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> DAG:
 
     from airflow.models import DagBag
 
+    persisted = False
     dag_bag = DagBag(dag_folder=str(dags_dir), include_examples=False, safe_mode=False)
     dag_bag.process_file(str(dag_path))
     dag_obj = dag_bag.dags.get(dag_id)
@@ -171,6 +173,9 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> DAG:
             if hasattr(dag_obj, "relative_fileloc"):
                 dag_model.relative_fileloc = dag_obj.relative_fileloc
             dag_model.is_paused = False
+            dag_model.is_stale = False
+            dag_model.last_parsed_time = timezone.utcnow()
+            dag_model.last_parse_duration = 0.0
             if hasattr(dag_model, "bundle_name"):
                 dag_model.bundle_name = bundle_name
             if bundle_version is not None and hasattr(dag_model, "bundle_version"):
@@ -184,13 +189,25 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> DAG:
             bundle_version=bundle_version,
             min_update_interval=0,
         )
+        persisted = True
     except Exception as exc:
-        logging.getLogger(__name__).info(
-            "Failed to persist serialized DAG '%s': %s", dag_id, exc
-        )
-        raise
+        # Airflow 3 disallows ORM access from execution-time contexts; skip persistence
+        # so we can still trigger runs as long as the scheduler discovers the DAG file.
+        message = str(exc)
+        if "Direct database access via the ORM is not allowed" in message:
+            logging.getLogger(__name__).warning(
+                "Skipping DAG persistence for '%s' due to Airflow execution-time DB "
+                "restrictions; relying on scheduler DAG discovery. Error: %s",
+                dag_id,
+                exc,
+            )
+        else:
+            logging.getLogger(__name__).info(
+                "Failed to persist serialized DAG '%s': %s", dag_id, exc
+            )
+            raise
 
-    return dag_obj
+    return dag_obj, persisted
 
 
 def _prepare_run_artifacts(
@@ -222,6 +239,7 @@ def _trigger_registered_dag(
     run_id: str,
     run_conf: Dict[str, Any],
     dag: Optional[DAG] = None,
+    dag_persisted: bool = True,
 ) -> Tuple[bool, Optional[BaseException]]:
     """Trigger a DAG run after the DAG has been registered/serialized."""
 
@@ -289,9 +307,10 @@ def _trigger_registered_dag(
     try:
         trigger_dag(**supported_kwargs)
     except Exception as exc:
+        message = str(exc)
         if (
             exc.__class__.__name__ == "DagRunAlreadyExists"
-            or "already exists" in str(exc).lower()
+            or "already exists" in message.lower()
         ):
             return (
                 False,
@@ -307,11 +326,18 @@ def _trigger_registered_dag(
         )
         return False, exc
 
-    logger.info(
-        "Force-registered and triggered DAG '%s' run '%s' without waiting for scheduler discovery",
-        dag_id,
-        run_id,
-    )
+    if dag_persisted:
+        logger.info(
+            "Force-registered and triggered DAG '%s' run '%s' without waiting for scheduler discovery",
+            dag_id,
+            run_id,
+        )
+    else:
+        logger.info(
+            "Triggered DAG '%s' run '%s' but relying on scheduler discovery because DAG persistence was skipped",
+            dag_id,
+            run_id,
+        )
     return True, None
 
 
@@ -345,4 +371,49 @@ def _poll_for_result(
 
     raise RuntimeError(
         "Airflow scheduler run completed but no result payload was produced"
+    )
+
+
+def _poll_for_scheduled_result(
+    *,
+    dag_id: str,
+    run_root,
+    poll_interval: float,
+    deserialize_fn: Callable[[bytes], Any],
+    started_at_epoch: float,
+) -> Dict[str, Any]:
+    """Poll for any new result file written under the DAG's run root."""
+
+    from pathlib import Path
+
+    run_root = Path(run_root) / dag_id
+    deadline = time.monotonic() + max(poll_interval * 10, 3600)
+
+    while time.monotonic() < deadline:
+        if run_root.exists():
+            run_dirs = sorted(
+                (p for p in run_root.iterdir() if p.is_dir()),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            for run_dir in run_dirs:
+                result_path = run_dir / "result.json"
+                if not result_path.exists():
+                    continue
+                # Only consider results produced after we submitted the DAG.
+                if result_path.stat().st_mtime < started_at_epoch:
+                    continue
+                serialized_result = result_path.read_text()
+                try:
+                    payload = deserialize_fn(serialized_result.encode("utf-8"))
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to load scheduler result payload for DAG '{dag_id}'"
+                    ) from exc
+                return payload if isinstance(payload, dict) else {}
+
+        time.sleep(min(1.0, poll_interval))
+
+    raise RuntimeError(
+        f"Airflow scheduler did not produce a result for DAG '{dag_id}'"
     )
