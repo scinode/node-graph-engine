@@ -2,168 +2,27 @@
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
+import logging
+import os
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+from uuid import UUID, uuid4
 
 from aiida import orm
 from aiida.common.links import LinkType
-from aiida.orm import QueryBuilder
 from node_graph.knowledge_graph import KnowledgeGraph
 
+try:  # pragma: no cover - optional dependency
+    from neo4j import GraphDatabase
+except Exception:  # pragma: no cover - handled at runtime
+    GraphDatabase = None
 
-class KnowledgeGraphData(orm.Dict):
-    """Light-weight AiiDA container for workflow or node-level knowledge graphs."""
+LOGGER = logging.getLogger(__name__)
 
+# Cached Neo4j driver so callers do not reopen connections repeatedly.
+_DRIVER = None
 
-    @property
-    def payload(self) -> Dict[str, Any]:  # pragma: no cover - thin wrapper
-        return self.get_dict()
-
-    def _as_core_knowledge_graph(self) -> KnowledgeGraph:
-        payload = self.get_dict() or {}
-        semantics = payload.get("semantics") or payload
-        workflow = payload.get("workflow") or {}
-        graph_uuid = (
-            semantics.get("graph_uuid")
-            or semantics.get("dag_id")
-            or workflow.get("identifier")
-            or workflow.get("name")
-        )
-        return KnowledgeGraph.from_dict(semantics, graph_uuid=graph_uuid)
-
-    def to_jsonld(self) -> Dict[str, Any]:
-        """
-        Return a JSON-LD representation of the stored semantics.
-
-        If a legacy ``jsonld`` block is present it is returned verbatim.
-        Otherwise we reconstruct JSON-LD from triples + sockets without
-        persisting duplicate data in the database.
-        """
-
-        payload = self.get_dict() or {}
-        semantics = payload.get("semantics") or payload
-        jsonld = semantics.get("jsonld") if isinstance(semantics, dict) else None
-        if isinstance(jsonld, dict):
-            return jsonld
-        rdf = self._as_core_knowledge_graph().as_rdflib()
-        serialized = rdf.serialize(format="json-ld")
-        if isinstance(serialized, bytes):
-            serialized = serialized.decode("utf-8")
-        return json.loads(serialized)
-
-    def to_rdf_graph(self):
-        """Return an ``rdflib.Graph`` parsed from the compact semantics."""
-
-        return self._as_core_knowledge_graph().as_rdflib()
-
-    def to_graphviz(self) -> "Digraph":
-        """Render the RDF graph to a Graphviz Digraph (requires graphviz)."""
-
-        return self._as_core_knowledge_graph().to_graphviz()
-
-    def to_graphviz_svg(self) -> str:
-        return self._as_core_knowledge_graph().to_graphviz_svg()
-
-    def _repr_svg_(self) -> Optional[str]:  # pragma: no cover - exercised in notebooks
-        return self._as_core_knowledge_graph()._repr_svg_()
-
-    def _repr_html_(self) -> Optional[str]:  # pragma: no cover - exercised in notebooks
-        return self._as_core_knowledge_graph()._repr_html_()
-
-    @classmethod
-    def _maybe_existing(cls, filters: Dict[str, Any]) -> Optional["KnowledgeGraphData"]:
-        qb = QueryBuilder()
-        qb.append(cls, filters=filters)
-        existing = qb.first()
-        return existing[0] if existing else None
-
-    @staticmethod
-    def _matches_filter_namespaces(node: orm.Node, filters: Dict[str, Any]) -> bool:
-        for namespace, expected in filters.items():
-            if namespace not in {"extras", "attributes"}:
-                continue
-            base = getattr(node.base, namespace, None)
-            if base is None:
-                return False
-            data = base.all if hasattr(base, "all") else base
-            if not isinstance(data, dict):
-                return False
-            if not KnowledgeGraphData._dict_matches(data, expected):
-                return False
-        return True
-
-    @staticmethod
-    def _dict_matches(data: Dict[str, Any], expected: Dict[str, Any]) -> bool:
-        for key, val in expected.items():
-            if key == "has_key":
-                if isinstance(val, str) and val not in data:
-                    return False
-                if isinstance(val, (list, tuple, set)) and any(v not in data for v in val):
-                    return False
-                continue
-            if val is None:
-                continue
-            if isinstance(val, dict):
-                sub = data.get(key)
-                if not isinstance(sub, dict):
-                    return False
-                if not KnowledgeGraphData._dict_matches(sub, val):
-                    return False
-                continue
-            if data.get(key) != val:
-                return False
-        return True
-
-    @classmethod
-    def get_or_create_workflow(
-        cls,
-        *,
-        payload: Dict[str, Any],
-        extras: Optional[Dict[str, Any]] = None,
-    ) -> Tuple["KnowledgeGraphData", bool]:
-        kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
-        filters: Dict[str, Any] = {
-            "attributes.hash": kg_hash
-        }
-
-        existing = cls._maybe_existing(filters)
-        if existing:
-            return existing, False
-
-        node = cls(dict=payload)
-        meta: Dict[str, Any] = {
-            "hash": kg_hash,
-        }
-        workflow_meta = payload.get("workflow") if isinstance(payload, dict) else {}
-        if isinstance(workflow_meta, dict):
-            meta["identifier"] = workflow_meta.get("identifier")
-            meta["callable_path"] = workflow_meta.get("callable_path")
-            meta["package_version"] = workflow_meta.get("package_version")
-        if extras:
-            meta.update(extras)
-        node.base.extras.set_many(meta)
-        node.store()
-        return node, True
-
-    @classmethod
-    def get_or_create_for_node(
-        cls,
-        *,
-        subject_uuid: str,
-        payload: Dict[str, Any],
-        extras: Optional[Dict[str, Any]] = None,
-    ) -> Tuple["KnowledgeGraphData", bool]:
-        filters = {"extras": {"scope": "node", "subject_uuid": subject_uuid}}
-        existing = cls._maybe_existing(filters)
-        if existing:
-            return existing, False
-        node = cls(dict=payload)
-        meta = {"scope": "node", "subject_uuid": subject_uuid}
-        meta.update(extras or {})
-        node.base.extras.set_many(meta)
-        node.store()
-        return node, True
 
 def _hash_semantics_payload(payload: Dict[str, Any]) -> str:
     """Return a stable hash for a semantics/knowledge-graph payload."""
@@ -171,6 +30,346 @@ def _hash_semantics_payload(payload: Dict[str, Any]) -> str:
     semantics = payload.get("semantics") or payload
     serialized = json.dumps(semantics, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _serialize_json(value: Any) -> str:
+    """Return a JSON string suitable for Neo4j property storage."""
+
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _get_neo4j_driver():
+    """Return a singleton Neo4j driver configured from environment variables."""
+
+    global _DRIVER
+    if _DRIVER is not None:
+        return _DRIVER
+    if GraphDatabase is None:
+        raise RuntimeError(
+            "Neo4j driver is not installed. Install the 'neo4j' package to enable "
+            "knowledge graph persistence."
+        )
+    uri = os.getenv("NODE_GRAPH_NEO4J_URI", "bolt://localhost:7687")
+    user = os.getenv("NODE_GRAPH_NEO4J_USER")
+    password = os.getenv("NODE_GRAPH_NEO4J_PASSWORD")
+    auth = (user, password or "") if user else None
+    _DRIVER = GraphDatabase.driver(uri, auth=auth)
+    return _DRIVER
+
+
+def _stringify_literal(obj: Any) -> str:
+    """Best-effort stable string representation for literals stored in Neo4j."""
+
+    if isinstance(obj, (str, int, float, bool)):
+        return str(obj)
+    try:
+        return json.dumps(obj, sort_keys=True, default=str)
+    except Exception:
+        return str(obj)
+
+
+def _value_kind(obj: Any) -> str:
+    """Return a light-weight type marker for a literal value."""
+
+    if obj is None:
+        return "none"
+    if isinstance(obj, bool):
+        return "bool"
+    if isinstance(obj, (int, float)):
+        return "number"
+    if isinstance(obj, dict):
+        return "dict"
+    if isinstance(obj, (list, tuple, set)):
+        return "list"
+    return "string"
+
+
+def _prepare_sockets(sockets: Dict[str, Dict[str, Any]], kg_hash: str) -> List[Dict[str, Any]]:
+    prepared: List[Dict[str, Any]] = []
+    for sid, meta in sockets.items():
+        prepared.append(
+            {
+                "id": sid,
+                "label": meta.get("label"),
+                "direction": meta.get("direction"),
+                "task": meta.get("task"),
+                "port": meta.get("port"),
+                "canonical": meta.get("canonical") or sid,
+                "knowledge_hash": kg_hash,
+            }
+        )
+    return prepared
+
+
+def _prepare_triples(
+    triples: Iterable[List[Any]],
+    socket_ids: Iterable[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Split triples into socket-to-socket vs literal relations."""
+
+    socket_set = set(socket_ids)
+    socket_triples: List[Dict[str, Any]] = []
+    literal_triples: List[Dict[str, Any]] = []
+    for triple in triples or []:
+        if not isinstance(triple, (list, tuple)) or len(triple) != 3:
+            continue
+        subj, pred, obj = triple
+        entry_base = {
+            "subject": str(subj),
+            "predicate": str(pred),
+            "raw_predicate": str(pred),
+        }
+        if isinstance(obj, str) and obj in socket_set:
+            socket_triples.append({**entry_base, "object_socket": obj})
+            continue
+        literal_triples.append(
+            {
+                **entry_base,
+                "value": _stringify_literal(obj),
+                "kind": _value_kind(obj),
+            }
+        )
+    return socket_triples, literal_triples
+
+
+def _is_valid_uuid(value: Any) -> bool:
+    """Return True if ``value`` is a valid UUID string."""
+
+    try:
+        UUID(str(value))
+        return True
+    except Exception:
+        return False
+
+
+def _write_knowledge_graph(
+    tx,
+    *,
+    kg_hash: str,
+    kg_uuid: str,
+    semantics: Dict[str, Any],
+    semantics_json: str,
+    workflow: Dict[str, Any],
+    workflow_json: str,
+    scope: Optional[str],
+    engine_kind: Optional[str],
+    sockets: List[Dict[str, Any]],
+    socket_triples: List[Dict[str, Any]],
+    literal_triples: List[Dict[str, Any]],
+) -> str:
+    """Persist a knowledge graph payload into Neo4j."""
+
+    record = tx.run(
+        """
+        MERGE (kg:KnowledgeGraph {uuid: $kg_uuid})
+        ON CREATE SET kg.created_at = timestamp()
+        SET kg.hash = $kg_hash,
+            kg.payload_json = $semantics_json,
+            kg.workflow_json = $workflow_json,
+            kg.scope = $scope,
+            kg.engine_kind = $engine_kind
+        RETURN kg.uuid AS uuid
+        """,
+        kg_hash=kg_hash,
+        kg_uuid=kg_uuid,
+        semantics_json=semantics_json,
+        workflow_json=workflow_json,
+        scope=scope,
+        engine_kind=engine_kind,
+    ).single()
+    stored_uuid = record["uuid"] if record else kg_uuid
+
+    tx.run(
+        """
+        MATCH (kg:KnowledgeGraph {hash: $kg_hash})
+        UNWIND $sockets AS socket
+        MERGE (s:Socket {id: socket.id, knowledge_hash: $kg_hash})
+        SET s.label = socket.label,
+            s.direction = socket.direction,
+            s.task = socket.task,
+            s.port = socket.port,
+            s.canonical = socket.canonical
+        MERGE (kg)-[:HAS_SOCKET]->(s)
+        """,
+        kg_hash=kg_hash,
+        sockets=sockets,
+    )
+
+    if socket_triples:
+        tx.run(
+            """
+            MATCH (kg:KnowledgeGraph {hash: $kg_hash})
+            UNWIND $triples AS triple
+            MATCH (s:Socket {id: triple.subject, knowledge_hash: $kg_hash})
+            MATCH (o:Socket {id: triple.object_socket, knowledge_hash: $kg_hash})
+            MERGE (s)-[r:TRIPLE {predicate: triple.predicate}]->(o)
+            SET r.raw_predicate = triple.raw_predicate
+            """,
+            kg_hash=kg_hash,
+            triples=socket_triples,
+        )
+
+    if literal_triples:
+        tx.run(
+            """
+            MATCH (kg:KnowledgeGraph {hash: $kg_hash})
+            UNWIND $triples AS triple
+            MATCH (s:Socket {id: triple.subject, knowledge_hash: $kg_hash})
+            MERGE (v:Value {value: triple.value, kind: triple.kind})
+            MERGE (s)-[r:TRIPLE {predicate: triple.predicate}]->(v)
+            SET r.raw_predicate = triple.raw_predicate,
+                r.literal_value = triple.value,
+                r.literal_kind = triple.kind
+            """,
+            kg_hash=kg_hash,
+            triples=literal_triples,
+        )
+
+    return stored_uuid
+
+
+def _find_existing_knowledge_graph(
+    tx, *, kg_hash: str, workflow_name: Optional[str]
+) -> Optional[str]:
+    """Return an existing KG UUID that matches hash (and workflow name if given)."""
+
+    records = tx.run(
+        """
+        MATCH (kg:KnowledgeGraph {hash: $kg_hash})
+        RETURN kg.uuid AS uuid, kg.workflow_json AS workflow_json
+        """,
+        kg_hash=kg_hash,
+    )
+    for rec in records:
+        candidate_uuid = rec.get("uuid")
+        wf_raw = rec.get("workflow_json")
+        wf_name = None
+        if wf_raw:
+            try:
+                wf = json.loads(wf_raw)
+                wf_name = wf.get("name") or wf.get("identifier")
+            except Exception:
+                wf_name = None
+        if workflow_name is not None:
+            if wf_name is None or str(wf_name).lower() != workflow_name:
+                continue
+        # If the stored uuid is not a valid UUID, upgrade it in place.
+        if not _is_valid_uuid(candidate_uuid):
+            new_uuid = str(uuid4())
+            tx.run(
+                """
+                MATCH (kg:KnowledgeGraph {hash: $kg_hash, uuid: $old_uuid})
+                SET kg.uuid = $new_uuid
+                """,
+                kg_hash=kg_hash,
+                old_uuid=candidate_uuid,
+                new_uuid=new_uuid,
+            )
+            return new_uuid
+        return candidate_uuid
+    return None
+
+
+def store_knowledge_graph(payload: Dict[str, Any]) -> str:
+    """Persist the provided semantics payload into Neo4j and return its UUID."""
+
+    semantics = payload.get("semantics") or payload
+    kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
+    workflow_meta = payload.get("workflow") or {}
+    workflow_name = workflow_meta.get("name") or workflow_meta.get("identifier")
+    graph_uuid = payload.get("graph_uuid") or semantics.get("graph_uuid") or semantics.get("dag_id")
+    if not graph_uuid:
+        graph_uuid = str(uuid4())
+    sockets = semantics.get("sockets") or {}
+    semantics_json = _serialize_json(semantics)
+    workflow_json = _serialize_json(payload.get("workflow", {}))
+    socket_triples, literal_triples = _prepare_triples(
+        semantics.get("triples", []),
+        sockets.keys(),
+    )
+    driver = _get_neo4j_driver()
+    with driver.session() as session:
+        # Reuse existing KG with the same hash and workflow name to avoid duplicates.
+        existing = session.execute_read(
+            _find_existing_knowledge_graph,
+            kg_hash=kg_hash,
+            workflow_name=str(workflow_name).lower() if workflow_name else None,
+        )
+        if existing:
+            return existing
+        kg_uuid = session.execute_write(
+            _write_knowledge_graph,
+            kg_hash=kg_hash,
+            kg_uuid=str(graph_uuid),
+            semantics=semantics,
+            semantics_json=semantics_json,
+            workflow=payload.get("workflow", {}),
+            workflow_json=workflow_json,
+            scope=payload.get("scope"),
+            engine_kind=payload.get("engine_kind"),
+            sockets=_prepare_sockets(sockets, kg_hash),
+            socket_triples=socket_triples,
+            literal_triples=literal_triples,
+        )
+    return kg_uuid
+
+
+def fetch_knowledge_graph(graph_uuid: str) -> Dict[str, Any]:
+    """Fetch a knowledge graph payload from Neo4j by UUID."""
+
+    driver = _get_neo4j_driver()
+    with driver.session() as session:
+        record = session.execute_read(
+            lambda tx: tx.run(
+                """
+                MATCH (kg:KnowledgeGraph {uuid: $uuid})
+                RETURN kg.payload_json AS payload_json,
+                       kg.hash AS hash,
+                       kg.workflow_json AS workflow_json
+                """,
+                uuid=graph_uuid,
+            ).single()
+        )
+    if not record:
+        raise ValueError(f"No knowledge graph with UUID {graph_uuid} found in Neo4j")
+    payload_raw = record.get("payload_json")
+    payload = json.loads(payload_raw) if payload_raw else {}
+    if "hash" not in payload and record.get("hash"):
+        payload["hash"] = record.get("hash")
+    workflow_raw = record.get("workflow_json")
+    if workflow_raw:
+        try:
+            payload.setdefault("workflow", json.loads(workflow_raw))
+        except Exception:
+            payload.setdefault("workflow", {})
+    return payload
+
+
+def fetch_all_knowledge_graphs(scope: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return lightweight summaries of all knowledge graphs stored in Neo4j."""
+
+    driver = _get_neo4j_driver()
+    query = "MATCH (kg:KnowledgeGraph) "
+    if scope:
+        query += "WHERE kg.scope = $scope "
+    query += "RETURN kg.uuid AS uuid, kg.payload_json AS payload_json, kg.hash AS hash, kg.workflow_json AS workflow_json"
+    with driver.session() as session:
+        records = session.execute_read(
+            lambda tx: list(tx.run(query, scope=scope or None))
+        )
+    summaries: List[Dict[str, Any]] = []
+    for rec in records:
+        payload_raw = rec.get("payload_json")
+        workflow_raw = rec.get("workflow_json")
+        summaries.append(
+            {
+                "uuid": rec["uuid"],
+                "payload": json.loads(payload_raw) if payload_raw else {},
+                "hash": rec.get("hash"),
+                "workflow": json.loads(workflow_raw) if workflow_raw else {},
+            }
+        )
+    return summaries
 
 def build_workflow_knowledge_payload(
     *,
@@ -188,6 +387,8 @@ def build_workflow_knowledge_payload(
 
     kg = graph.knowledge_graph.copy(graph_uuid=getattr(graph, "uuid", None))
     kg._graph = graph
+    if not getattr(kg, "graph_uuid", None):
+        kg.graph_uuid = str(uuid4())
     kg.update()
     if not kg.entities and not kg.links:
         return None
@@ -196,6 +397,7 @@ def build_workflow_knowledge_payload(
     payload_hash = _hash_semantics_payload({"semantics": semantics_payload})
     payload: Dict[str, Any] = {
         "scope": "workflow",
+        "graph_uuid": str(kg.graph_uuid),
         "workflow": {
             "name": getattr(graph, "name", None),
             "identifier": identifier,
@@ -218,23 +420,23 @@ def persist_workflow_knowledge_graph(
     process_node: orm.WorkflowNode,
     graph: Any,
     engine_kind: str,
-) -> Optional[KnowledgeGraphData]:
+) -> Optional[str]:
     print(f"Persisting workflow knowledge for process node {process_node.pk}")
     payload = build_workflow_knowledge_payload(graph=graph, engine_kind=engine_kind)
     if payload is None:
         print("No semantics found; skipping knowledge graph creation.")
         return None
-    wf_meta = payload.get("workflow", {})
-    knowledge, _ = KnowledgeGraphData.get_or_create_workflow(
-        payload=payload,
-        extras={"engine_kind": engine_kind},
-    )
     try:
-        process_node.base.extras.set("knowledge_graph_uuid", knowledge.uuid)
+        kg_uuid = store_knowledge_graph(payload)
+    except Exception as exc:  # pragma: no cover - depends on runtime Neo4j availability
+        LOGGER.error("Failed to persist knowledge graph to Neo4j: %s", exc)
+        return None
+    try:
+        process_node.base.extras.set("knowledge_graph_uuid", kg_uuid)
     except Exception:
         pass
-    _attach_semantics_references(process_node, knowledge_uuid=str(knowledge.uuid))
-    return knowledge
+    _attach_semantics_references(process_node, knowledge_uuid=str(kg_uuid))
+    return kg_uuid
 
 
 def _attach_semantics_references(

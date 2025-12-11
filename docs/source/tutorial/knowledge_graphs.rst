@@ -6,11 +6,23 @@ Knowledge graphs (workflow semantics)
    call the same helper (``persist_workflow_knowledge_graph``); ensure integration is
    enabled for your backend.
 
+Install Neo4j
+-------------
+
+
+.. code-block:: bash
+  
+  pip install neo4j
+  docker run   -p7474:7474    -p7687:7687    -d    -e NEO4J_AUTH=neo4j/secretgraph    neo4j:latest
+  export NODE_GRAPH_NEO4J_URI="neo4j://localhost"
+  export NODE_GRAPH_NEO4J_USER="neo4j"
+  export NODE_GRAPH_NEO4J_PASSWORD="secretgraph"
+
 What gets stored
 ----------------
 
-- **KnowledgeGraphData** (AiiDA ``KnowledgeGraphData`` node) is written once per
-  workflow version (keyed by workflow name, callable path, package version).
+- **Neo4j knowledge graph** is written once per workflow version (keyed by a stable hash)
+  and referenced from the workflow ``ProcessNode`` extras.
 - **Semantics source**
   - Socket annotations in task definitions (inputs/outputs)
 - Runtime semantics relations/annotations are buffered internally on
@@ -33,45 +45,38 @@ What gets stored
 Where it is stored
 ------------------
 
-Knowledge graphs are persisted as AiiDA ``KnowledgeGraphData`` nodes with extras:
-
-- ``extras.scope = 'workflow'``
-- ``extras.workflow_name`` and versioning fields (callable path, package version)
-- ``extras.identifier`` (task identifier/name)
-
-The workflow ``WorkflowNode`` that created it also stores the UUID under
+Knowledge graphs are persisted to Neo4j (configure via ``NODE_GRAPH_NEO4J_URI``,
+``NODE_GRAPH_NEO4J_USER``, ``NODE_GRAPH_NEO4J_PASSWORD``). The workflow
+``ProcessNode`` that created it stores the UUID under
 ``process_node.base.extras['knowledge_graph_uuid']`` for quick lookup.
 
 Retrieving a knowledge graph
 ----------------------------
 
-Example (``verdi shell``) to fetch the latest workflow knowledge graph:
+Example (``verdi shell``) to fetch a workflow knowledge graph by UUID stored on the workflow node:
 
 .. code-block:: python
 
+   from node_graph_engine.orm.data.knowledge_graph import fetch_knowledge_graph
    from aiida import orm
-   from aiida.orm import QueryBuilder
-   from node_graph_engine.orm.data.knowledge_graph import KnowledgeGraphData
 
-   qb = QueryBuilder()
-   qb.append(KnowledgeGraphData)
-   kg = qb.iterall()[-1][0] if qb.count() > 0 else None
-   if kg is None:
-       raise RuntimeError("No KnowledgeGraphData with scope=workflow found")
-   payload = kg.get_dict()
-   semantics = payload["semantics"]
-   print("Graph UUID:", semantics.get("graph_uuid"))
+   workflow = orm.load_node("workflow-uuid-here")
+   kg_uuid = workflow.base.extras.get("knowledge_graph_uuid")
+   semantics = fetch_knowledge_graph(str(kg_uuid))
+   print("Graph UUID:", kg_uuid)
    print("Sockets:", semantics["sockets"])
    print("Triples:", semantics["triples"])
 
-Use ``KnowledgeGraphData.to_jsonld()`` to reconstruct JSON-LD for RDF/GraphViz export (or inspect compact semantics directly when working with ``Graph.knowledge_graph``):
+Use ``KnowledgeGraph.from_dict`` and RDFLib/GraphViz helpers to reconstruct JSON-LD for export:
 
 .. code-block:: python
 
    import json
    from rdflib import Graph
+   from node_graph.knowledge_graph import KnowledgeGraph
 
-   jsonld = kg.to_jsonld()
+   kg = KnowledgeGraph.from_dict(semantics, graph_uuid=kg_uuid)
+   jsonld = json.loads(kg.as_rdflib().serialize(format="json-ld"))
    g = Graph().parse(data=json.dumps(jsonld), format="json-ld")
    g.serialize("knowledge.ttl", format="turtle")
 
