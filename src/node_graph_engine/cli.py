@@ -8,7 +8,7 @@ from typing import Sequence
 
 import click
 
-from node_graph_engine.orm.data.knowledge_graph import (
+from node_graph_engine.neo4j.knowledge_graph import (
     fetch_all_knowledge_graphs,
     fetch_knowledge_graph,
     _get_neo4j_driver,

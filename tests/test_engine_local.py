@@ -7,7 +7,7 @@ from node_graph.socket_spec import meta
 from node_graph.semantics import SemanticTag
 from node_graph.semantics import attach_semantics, attribute_ref
 from node_graph_engine.engines.local import LocalEngine
-from node_graph_engine.orm.data.knowledge_graph import fetch_knowledge_graph
+from node_graph_engine.neo4j.knowledge_graph import fetch_knowledge_graph
 from typing import Annotated, Dict, List
 
 

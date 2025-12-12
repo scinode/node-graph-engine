@@ -23,7 +23,7 @@ from ..core.utils import (
     _is_encoded_tagged,
     update_nested_dict_with_special_keys,
 )
-from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
+from ..neo4j.knowledge_graph import persist_workflow_knowledge_graph
 
 from celery import Celery
 from celery.result import AsyncResult

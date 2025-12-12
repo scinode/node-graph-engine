@@ -57,7 +57,7 @@ Example (``verdi shell``) to fetch a workflow knowledge graph by UUID stored on 
 
 .. code-block:: python
 
-   from node_graph_engine.orm.data.knowledge_graph import fetch_knowledge_graph
+   from node_graph_engine.neo4j.knowledge_graph import fetch_knowledge_graph
    from aiida import orm
 
    workflow = orm.load_node("workflow-uuid-here")

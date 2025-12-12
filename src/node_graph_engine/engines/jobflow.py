@@ -23,7 +23,7 @@ from ..core.utils import (
     get_default_user_email,
     load_default_user,
 )
-from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
+from ..neo4j.knowledge_graph import persist_workflow_knowledge_graph
 
 from jobflow import Flow, job, run_locally
 from jobflow.core.job import Job
