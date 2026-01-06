@@ -188,7 +188,15 @@ def _encode_runtime_inputs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _decode_runtime_inputs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: _decode_aiida_node(value) for key, value in kwargs.items()}
+    decoded: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        try:
+            decoded[key] = _decode_aiida_node(value)
+        except Exception as exc:
+            raise TypeError(
+                f"Cannot decode runtime input {key!r} (type {type(value)}): {exc}"
+            ) from exc
+    return decoded
 
 
 def close_threadlocal_aiida_session() -> None:

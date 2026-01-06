@@ -30,13 +30,17 @@ What gets stored
 - **Merge strategy**: annotations and runtime additions for the same socket are
   merged into a single payload. Attachments referencing sockets are resolved to
   lightweight references; nothing is duplicated per run.
-- **Format**: stored under ``payload['semantics']`` using
-  ``Graph.knowledge_graph.to_dict()`` (JSON-LD is reconstructed on demand):
+- **Format**: stored *normalized* in Neo4j (no duplicated full JSON blob):
+  - ``(:KnowledgeGraph)`` stores workflow/engine metadata plus ``namespaces_json``.
+  - ``(:Socket)`` nodes store socket metadata (task/direction/port/label/canonical).
+  - ``[:TRIPLE]`` relationships encode semantic predicates, pointing either to another
+    ``(:Socket)`` or a ``(:Value)`` literal node.
+  - The semantics payload (``namespaces``, ``sockets``, ``triples``) is reconstructed
+    on demand and matches ``Graph.knowledge_graph.to_dict()``.
 
   .. code-block:: json
 
      {
-       "graph_uuid": "abc123",
        "namespaces": {"qudt": "http://qudt.org/schema/qudt/", "rdf": "...", "rdfs": "..."},
        "sockets": {"task.output.result": {"task": "task", "direction": "output", "port": "result", "label": "Band gap"}},
        "triples": [["task.output.result", "rdf:type", "qudt:QuantityValue"], ["task.output.result", "rdfs:label", "Band gap"]]
@@ -60,48 +64,29 @@ Example (``verdi shell``) to fetch a workflow knowledge graph by UUID stored on 
    from node_graph_engine.neo4j.knowledge_graph import fetch_knowledge_graph
    from aiida import orm
 
-   workflow = orm.load_node("workflow-uuid-here")
-   kg_uuid = workflow.base.extras.get("knowledge_graph_uuid")
-   semantics = fetch_knowledge_graph(str(kg_uuid))
-   print("Graph UUID:", kg_uuid)
+   kg_uuid = "your-knowledge-graph-uuid"
+   semantics = fetch_knowledge_graph(kg_uuid)
    print("Sockets:", semantics["sockets"])
    print("Triples:", semantics["triples"])
 
-Use ``KnowledgeGraph.from_dict`` and RDFLib/GraphViz helpers to reconstruct JSON-LD for export:
+Fetch metadata + semantics in one payload:
 
 .. code-block:: python
 
-   import json
-   from rdflib import Graph
-   from node_graph.knowledge_graph import KnowledgeGraph
+   payload = fetch_knowledge_graph(kg_uuid, include_metadata=True)
+   print("Workflow:", payload["workflow"])
+   print("Engine:", payload["engine_kind"])
+   print("Sockets:", payload["semantics"]["sockets"])
 
-   kg = KnowledgeGraph.from_dict(semantics, graph_uuid=kg_uuid)
-   jsonld = json.loads(kg.as_rdflib().serialize(format="json-ld"))
-   g = Graph().parse(data=json.dumps(jsonld), format="json-ld")
-   g.serialize("knowledge.ttl", format="turtle")
+Use ``KnowledgeGraph.from_dict`` and visualising directly inside Jupyter-notebook:
 
-Visualising
------------
+.. code-block:: python
 
-- **JSON-LD playground**: copy ``jsonld`` into https://json-ld.org/playground/ to
-  explore IRIs, types, and relations.
-  - Make sure you paste valid JSON (double quotes). Use ``json.dumps(jsonld)`` to
-    get a JSON string; Python reprs with single quotes will be rejected.
-- **Graphviz (local)**: convert JSON-LD to DOT via RDFLib + ``rdf2dot``:
+   from node_graph.knowledge.graph import KnowledgeGraph
 
-  .. code-block:: python
+   kg = KnowledgeGraph.from_dict(payload)
+   kg
 
-     from rdflib import Graph
-     import json
-
-     g = Graph().parse(data=json.dumps(jsonld), format="json-ld")
-     g.serialize("knowledge.ttl", format="turtle")
-     # convert TTL -> DOT -> PNG (requires graphviz installed)
-     # python -m rdflib.tools.rdf2dot knowledge.ttl | dot -Tpng -o knowledge.png
-
-- This is complementary to the standard AiiDA provenance graph: provenance shows
-  lineage; the knowledge graph shows merged ontology semantics for the workflow
-  definition.
 
 Notes and scope
 ---------------
@@ -126,23 +111,3 @@ Schema at a glance
   as socket IDs, IRIs, or literals.
 - **Context**: merged JSON-LD context from annotations/runtime additions plus RDF/RDFS
   prefixes (available via ``semantics['namespaces']``).
-- **JSON-LD**: preserved under ``payload['semantics']['jsonld']`` for interoperability.
-
-Interpreting and visualising
-----------------------------
-
-- Resolution path for agents/queries:
-  - **Property-first (common chat flow)**: search semantics (by IRI/label/unit) across data nodes → for each hit, follow AiiDA links to the creator process → climb to the root workflow → read ``knowledge_graph_uuid`` → look up the matching socket in the KG to normalise meaning/units → use provenance to fetch related inputs/structures/sibling properties.
-  - **Schema-first**: search the workflow KG for sockets matching an IRI/label (e.g. ``qudt:BulkModulus``) → enumerate workflow runs that reference that KG (via ``knowledge_graph_uuid`` on the workflow process) → pull produced data nodes via provenance → convert/align units using KG attributes.
-  - **Data-first**: given a specific ``Data`` UUID, follow provenance to its creator/root workflow, fetch the KG, and interpret/compare via the canonical socket (``task``/``direction``/``socket``).
-- Visualisation: load ``payload['semantics']['jsonld']`` into RDFLib and render with GraphViz
-  (see example above). Socket identifiers (``ng://…``) make it easy to see which part of the
-  workflow a property belongs to.
-
-Next steps
-----------
-
-- Integrate ``persist_workflow_knowledge`` into other engines (Prefect, Dask,
-  etc.) to make the behaviour backend-agnostic.
-- Optional: export knowledge graphs to a triple store (GraphDB/Fuseki/RDFLib) for
-  SPARQL over multiple workflows/profiles.
