@@ -572,9 +572,7 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         try:
             from pathlib import Path
 
-            airflow_home = Path(
-                os.environ.get("AIRFLOW_HOME", Path.home() / "airflow")
-            )
+            airflow_home = Path(os.environ.get("AIRFLOW_HOME", Path.home() / "airflow"))
             run_root = airflow_home / "ng_subgraph_runs"
             fallback_path = run_root / dag_run.dag_id / dag_run.run_id / "result.json"
             result_path_str = str(fallback_path)
@@ -760,7 +758,7 @@ def airflow_while_check_task(
                 run_id=dag_run.run_id,
                 task_ids=reset_ids,
             )
-        except Exception as exc:
+        except Exception:
             logging.getLogger(__name__).exception(
                 "Failed to reset tasks for while zone %s", _ng_while_zone
             )

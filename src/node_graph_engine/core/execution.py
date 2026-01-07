@@ -35,7 +35,6 @@ from .utils import (
     update_nested_dict_with_special_keys,
     update_outputs,
 )
-from aiida.orm.utils.serialize import serialize
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +84,7 @@ def prepare_graph_run(
 ) -> GraphRunContext:
     from node_graph_engine.orm.node_graph import NodeGraphNode
     from .utils import save_nodegraph_data
+
     order, incoming, required = _scan_links_topology(ng)
     parent_node = orm.load_node(parent_pid) if parent_pid else None
     workflow_kwargs = {"user": user} if user is not None else {}

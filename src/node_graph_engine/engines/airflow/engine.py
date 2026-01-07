@@ -406,7 +406,9 @@ class AirflowEngine(BaseEngine):
             for condition_name in condition_task_names:
                 condition_task_zone.setdefault(condition_name, zone_name)
             condition_task_ids = [
-                task_id_map[name] for name in condition_task_names if name in task_id_map
+                task_id_map[name]
+                for name in condition_task_names
+                if name in task_id_map
             ]
             child_task_ids = [
                 task_id_map[name] for name in zone_children if name in task_id_map
