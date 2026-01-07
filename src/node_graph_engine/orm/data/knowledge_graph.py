@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from aiida import orm
 from aiida.common.links import LinkType
 from aiida.orm import QueryBuilder
-from node_graph.knowledge_graph import KnowledgeGraph
+from node_graph.knowledge import KnowledgeGraph
 
 
 class KnowledgeGraphData(orm.Dict):

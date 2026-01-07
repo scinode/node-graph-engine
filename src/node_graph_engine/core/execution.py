@@ -179,6 +179,7 @@ def execute_task_job(
         process_node.store()
         try:
             call_kwargs = deserialize_to_raw_python_data(inputs)
+            print("Call kwargs:", call_kwargs)
             results = callable_obj(**call_kwargs)
             if inspect.isawaitable(results):
                 results = asyncio.run(results)

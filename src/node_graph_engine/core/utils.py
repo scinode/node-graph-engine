@@ -321,6 +321,8 @@ def _scan_links_topology(
         src = lk.from_task.name
         dst = lk.to_task.name
         incoming[dst].append(lk)
+        if src == "graph_ctx" or dst == "graph_ctx":
+            continue
         outgoing[src].append((dst, lk.to_socket._scoped_name))
         indeg[dst] = indeg.get(dst, 0) + 1
         indeg.setdefault(src, 0)

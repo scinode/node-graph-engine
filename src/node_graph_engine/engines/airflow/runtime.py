@@ -27,6 +27,9 @@ from node_graph_engine.core.utils import (
     get_nested_dict,
     load_default_user,
     load_nodegraph_data,
+    _decode_runtime_inputs,
+    _build_node_link_kwargs,
+    update_nested_dict,
     update_nested_dict_with_special_keys,
 )
 from node_graph_engine.orm.data.knowledge_graph import persist_workflow_knowledge_graph
@@ -34,6 +37,201 @@ from node_graph_engine.core.task import TaskMeta
 
 from .async_request import AsyncNodeExecutionRequest
 from .common import IncomingSpec
+
+_NG_RUNTIME_CONTEXT_KEY = "ng_runtime_context"
+_NG_WHILE_STATE_KEY = "ng_while_state"
+
+
+def _reset_task_instances_via_api(
+    *,
+    dag_id: str,
+    run_id: str,
+    task_ids: List[str],
+) -> None:
+    if not task_ids:
+        return
+    try:
+        from airflow.configuration import conf
+
+        base_url = conf.get("api", "base_url", fallback=None)
+        if not base_url:
+            base_url = conf.get("webserver", "base_url", fallback=None)
+    except Exception:
+        base_url = None
+    if not base_url:
+        base_url = "http://localhost:8080"
+    base_url = base_url.rstrip("/")
+    url = f"{base_url}/api/v2/dags/{dag_id}/clearTaskInstances"
+    payload = {
+        "dry_run": False,
+        "only_failed": False,
+        "only_running": False,
+        "reset_dag_runs": False,
+        "dag_run_id": run_id,
+        "task_ids": task_ids,
+    }
+    headers: Dict[str, str] = {}
+    token = os.environ.get("NG_AIRFLOW_API_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    user = os.environ.get("NG_AIRFLOW_API_USER")
+    password = os.environ.get("NG_AIRFLOW_API_PASSWORD")
+    basic_auth = os.environ.get("NG_AIRFLOW_API_BASIC_AUTH")
+    if "Authorization" not in headers and user and password:
+        try:
+            import httpx
+            from urllib.parse import urlsplit, urlunsplit
+
+            parsed = urlsplit(base_url)
+            path = parsed.path.rstrip("/")
+            if path.endswith("/api/v2"):
+                path = path[: -len("/api/v2")]
+            auth_base = urlunsplit(
+                (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
+            ).rstrip("/")
+            auth_url = f"{auth_base}/auth/token"
+            resp = httpx.post(
+                auth_url,
+                json={"username": user, "password": password},
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            token_payload = resp.json()
+            access_token = token_payload.get("access_token")
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
+        except Exception:
+            pass
+    if "Authorization" not in headers:
+        if basic_auth:
+            raw = basic_auth
+        elif user and password:
+            raw = f"{user}:{password}"
+        else:
+            raw = ""
+        if raw:
+            import base64
+
+            creds = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+            headers["Authorization"] = f"Basic {creds}"
+    try:
+        import httpx
+
+        resp = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+        resp.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to clear task instances via Airflow API: {exc}"
+        ) from exc
+
+
+def _get_runtime_context(
+    *,
+    ti: Any,
+    runtime_context_task_id: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if ti is None or runtime_context_task_id is None:
+        return None
+    try:
+        from airflow.models.xcom import XCom
+
+        payload = XCom.get_one(
+            key=_NG_RUNTIME_CONTEXT_KEY,
+            dag_id=ti.dag_id,
+            task_id=runtime_context_task_id,
+            run_id=ti.run_id,
+        )
+        if payload is not None:
+            return payload
+    except Exception:
+        pass
+    return ti.xcom_pull(task_ids=runtime_context_task_id)
+
+
+def _set_runtime_context(
+    *,
+    ti: Any,
+    runtime_context_task_id: Optional[str],
+    payload: Dict[str, Any],
+) -> None:
+    if ti is None or runtime_context_task_id is None:
+        return
+    try:
+        from airflow.models.xcom import XCom
+
+        XCom.set(
+            key=_NG_RUNTIME_CONTEXT_KEY,
+            value=payload,
+            dag_id=ti.dag_id,
+            task_id=runtime_context_task_id,
+            run_id=ti.run_id,
+        )
+    except Exception:
+        ti.xcom_push(key=_NG_RUNTIME_CONTEXT_KEY, value=payload)
+
+
+def _apply_ctx_updates(
+    *,
+    runtime_context: Dict[str, Any],
+    ctx_updates: Iterable[Dict[str, str]],
+    source_map: Dict[str, Any],
+) -> None:
+    values = runtime_context.setdefault("values", {})
+    ctx_values = values.setdefault("graph_ctx", {})
+    for update in ctx_updates:
+        from_task = update.get("from")
+        if not from_task:
+            continue
+        payload = source_map.get(from_task)
+        if payload is None:
+            continue
+        from_socket = update.get("from_socket", "")
+        if from_socket == "_outputs":
+            value = payload
+        else:
+            value = get_nested_dict(payload, from_socket, default=None)
+        to_socket = update.get("to_socket")
+        if to_socket:
+            update_nested_dict(ctx_values, to_socket, value)
+
+
+def _evaluate_while_condition(
+    *,
+    ti: Any,
+    condition_specs: List[IncomingSpec],
+) -> Tuple[bool, List[Any]]:
+    """Return the boolean condition result and raw evaluated values."""
+    source_map: Dict[str, Any] = {}
+    for spec in condition_specs:
+        from_task = spec.get("from")
+        task_id = spec.get("from_task_id") or from_task
+        if not from_task or not task_id:
+            continue
+        payload = ti.xcom_pull(task_ids=task_id)
+        if payload is not None:
+            try:
+                source_map[from_task] = _decode_runtime_inputs(payload)
+            except Exception:
+                source_map[from_task] = payload
+
+    condition_values: List[Any] = []
+    for spec in condition_specs:
+        from_task = spec.get("from")
+        if not from_task:
+            continue
+        payload = source_map.get(from_task)
+        if payload is None:
+            continue
+        from_socket = spec.get("from_socket") or ""
+        if from_socket == "_outputs":
+            condition_values.append(payload)
+        else:
+            condition_values.append(get_nested_dict(payload, from_socket, default=None))
+
+    condition_value = bool(condition_values) and all(
+        bool(value) for value in condition_values
+    )
+    return condition_value, condition_values
 
 
 def _build_runtime_kwargs(
@@ -195,7 +393,10 @@ def airflow_node_task(
     ti = context.get("ti")
     runtime_context: Optional[Dict[str, Any]] = None
     if runtime_context_task_id and ti is not None:
-        runtime_context = ti.xcom_pull(task_ids=runtime_context_task_id)
+        runtime_context = _get_runtime_context(
+            ti=ti,
+            runtime_context_task_id=runtime_context_task_id,
+        )
 
     parent_pid = context.get("_ng_parent_pid")
     if parent_pid is None and runtime_context:
@@ -220,14 +421,15 @@ def airflow_node_task(
 
     source_map = dict(base_values)
     incoming_specs: Iterable[IncomingSpec] = context.get("_ng_incoming", [])
-    upstream_ids = {spec["from"] for spec in incoming_specs}
     if ti is not None:
-        for task_id in upstream_ids:
-            if task_id in BUILTIN_TASKS:
+        for spec in incoming_specs:
+            task_name = spec.get("from")
+            task_id = spec.get("from_task_id") or task_name
+            if not task_name or task_name in BUILTIN_TASKS:
                 continue
             pulled = ti.xcom_pull(task_ids=task_id)
             if pulled is not None:
-                source_map[task_id] = pulled
+                source_map[task_name] = pulled
 
     graph_pid = runtime_context.get("graph_pid") if runtime_context else None
 
@@ -257,6 +459,26 @@ def airflow_node_task(
             mark_process_failure(process_node, exc)
             process_node.seal()
         raise
+
+    ctx_updates: List[Dict[str, str]] = list(context.get("_ng_ctx_updates") or [])
+    if ctx_updates and ti is not None and runtime_context_task_id:
+        runtime_context = _get_runtime_context(
+            ti=ti,
+            runtime_context_task_id=runtime_context_task_id,
+        )
+        if runtime_context is None:
+            runtime_context = {"values": dict(base_values)}
+        meta = _ensure_meta(context["_ng_meta"])
+        _apply_ctx_updates(
+            runtime_context=runtime_context,
+            ctx_updates=ctx_updates,
+            source_map={meta.node_name: result},
+        )
+        _set_runtime_context(
+            ti=ti,
+            runtime_context_task_id=runtime_context_task_id,
+            payload=runtime_context,
+        )
 
     if ti is not None:
         ti.xcom_push(key="return_value", value=result)
@@ -288,17 +510,46 @@ def airflow_init_task(**context: Any) -> Dict[str, Any]:
     for key, value in builtins.items():
         graph_context.values.setdefault(key, value)
 
+    # Only seed ctx from builtins; task-driven ctx updates happen during execution.
+    graph_ctx_links = [
+        lk
+        for lk in ng.links
+        if lk.to_task.name == "graph_ctx" and lk.from_task.name in BUILTIN_TASKS
+    ]
+    if graph_ctx_links:
+        source_map = dict(graph_context.values)
+        graph_ctx_values = _build_node_link_kwargs(
+            "graph_ctx",
+            graph_ctx_links,
+            source_map,
+            resolve_socket=lambda from_name, from_socket, source: get_nested_dict(
+                source.get(from_name, {}), from_socket, default=None
+            ),
+            resolve_whole=lambda from_name, source: source.get(from_name),
+            bundle_factory=lambda payload: payload,
+        )
+        graph_ctx_values = update_nested_dict_with_special_keys(graph_ctx_values)
+        graph_context.values.setdefault("graph_ctx", {})
+        if isinstance(graph_context.values["graph_ctx"], dict):
+            graph_context.values["graph_ctx"].update(graph_ctx_values)
+        else:
+            graph_context.values["graph_ctx"] = graph_ctx_values
+
     semantics_data = (
         graph_context.semantics.to_dict()
         if graph_context.semantics is not None
         else None
     )
-    return {
+    payload = {
         "graph_pid": graph_context.process_node.uuid,
         "values": dict(graph_context.values),
         "semantics": semantics_data,
         "graph_uuid": ng.uuid,
     }
+    ti = context.get("ti")
+    if ti is not None:
+        ti.xcom_push(key=_NG_RUNTIME_CONTEXT_KEY, value=payload)
+    return payload
 
 
 def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
@@ -306,6 +557,7 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
     profile_name = context.get("_ng_profile_name")
     ensure_aiida_profile(profile_name)
     node_task_ids: Iterable[str] = context.get("_ng_task_task_ids", [])
+    task_id_map: Dict[str, str] = context.get("_ng_task_id_map", {})
     incoming_specs: Dict[str, List[IncomingSpec]] = context.get("_ng_incoming", {})
 
     ti = context.get("ti")
@@ -330,7 +582,10 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         except Exception:
             result_path_str = None
 
-    runtime_context = ti.xcom_pull(task_ids=runtime_context_task_id)
+    runtime_context = _get_runtime_context(
+        ti=ti,
+        runtime_context_task_id=runtime_context_task_id,
+    )
     if not runtime_context:
         raise RuntimeError("Missing Graph runtime context; ensure init task succeeded")
 
@@ -357,12 +612,13 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
         raise RuntimeError("Graph execution failed; see upstream task logs for details")
 
     values: Dict[str, Any] = dict(runtime_context.get("values", {}))
-    for task_id in node_task_ids:
-        if task_id in BUILTIN_TASKS:
+    for task_name in node_task_ids:
+        if task_name in BUILTIN_TASKS:
             continue
+        task_id = task_id_map.get(task_name, task_name)
         pulled = ti.xcom_pull(task_ids=task_id)
         if pulled is not None:
-            values[task_id] = pulled
+            values[task_name] = pulled
 
     try:
         graph_outputs = compute_graph_outputs(
@@ -416,3 +672,114 @@ def airflow_finalize_task(**context: Any) -> Dict[str, Any]:
                 )
         if not process_node.is_sealed:
             process_node.seal()
+
+
+def airflow_while_check_task(
+    *,
+    _ng_while_zone: str,
+    _ng_while_condition_specs: List[IncomingSpec],
+    _ng_while_condition_task_ids: List[str],
+    _ng_while_child_task_ids: List[str],
+    _ng_while_precheck_task_ids: Optional[List[str]] = None,
+    _ng_while_max_iterations: int,
+    _ng_ctx_updates: Optional[List[Dict[str, str]]] = None,
+    _ng_runtime_context_task_id: Optional[str] = None,
+    **context: Any,
+) -> Dict[str, Any]:
+    """Tail check for while: update ctx, reschedule if condition stays true."""
+    ti = context.get("ti")
+    dag_run = context.get("dag_run")
+    runtime_context = _get_runtime_context(
+        ti=ti,
+        runtime_context_task_id=_ng_runtime_context_task_id,
+    )
+    if runtime_context is None:
+        runtime_context = {"values": {}}
+
+    if ti is None or dag_run is None:
+        raise RuntimeError("Task instance context is required for while check task")
+
+    ctx_updates = list(_ng_ctx_updates or [])
+    if ctx_updates:
+        source_map: Dict[str, Any] = {}
+        for update in ctx_updates:
+            from_task = update.get("from")
+            task_id = update.get("from_task_id") or from_task
+            if not task_id or not from_task:
+                continue
+            payload = ti.xcom_pull(task_ids=task_id)
+            if payload is not None:
+                source_map[from_task] = payload
+        if source_map:
+            _apply_ctx_updates(
+                runtime_context=runtime_context,
+                ctx_updates=ctx_updates,
+                source_map=source_map,
+            )
+
+    _set_runtime_context(
+        ti=ti,
+        runtime_context_task_id=_ng_runtime_context_task_id,
+        payload=runtime_context,
+    )
+
+    condition_value, _condition_values = _evaluate_while_condition(
+        ti=ti,
+        condition_specs=_ng_while_condition_specs,
+    )
+
+    while_state = runtime_context.setdefault(_NG_WHILE_STATE_KEY, {})
+    current_iterations = int(while_state.get(_ng_while_zone, 0))
+    if condition_value and current_iterations < int(_ng_while_max_iterations):
+        while_state[_ng_while_zone] = current_iterations + 1
+        _set_runtime_context(
+            ti=ti,
+            runtime_context_task_id=_ng_runtime_context_task_id,
+            payload=runtime_context,
+        )
+        try:
+            reset_ids = list(_ng_while_child_task_ids) + list(
+                _ng_while_condition_task_ids
+            )
+            if _ng_while_precheck_task_ids:
+                reset_ids.extend(list(_ng_while_precheck_task_ids))
+            _reset_task_instances_via_api(
+                dag_id=dag_run.dag_id,
+                run_id=dag_run.run_id,
+                task_ids=reset_ids,
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).exception(
+                "Failed to reset tasks for while zone %s", _ng_while_zone
+            )
+            raise
+        from airflow.exceptions import AirflowRescheduleException
+        from airflow.sdk import timezone
+
+        raise AirflowRescheduleException(timezone.utcnow())
+
+    return {
+        "condition": bool(condition_value),
+        "iterations": current_iterations,
+    }
+
+
+def airflow_while_precheck_task(
+    *,
+    _ng_while_condition_specs: List[IncomingSpec],
+    **context: Any,
+) -> Dict[str, Any]:
+    """Head check for while: skip body when the condition is false."""
+    ti = context.get("ti")
+    if ti is None:
+        raise RuntimeError("Task instance context is required for while pre-check task")
+
+    condition_value, _condition_values = _evaluate_while_condition(
+        ti=ti,
+        condition_specs=_ng_while_condition_specs,
+    )
+    if not condition_value:
+        from airflow.exceptions import AirflowSkipException
+
+        raise AirflowSkipException("While condition evaluated to False")
+    return {"condition": True}
