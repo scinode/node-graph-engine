@@ -723,10 +723,18 @@ def airflow_while_check_task(
         payload=runtime_context,
     )
 
-    condition_value, _condition_values = _evaluate_while_condition(
-        ti=ti,
-        condition_specs=_ng_while_condition_specs,
-    )
+    condition_value: Optional[bool] = None
+    if _ng_while_precheck_task_ids:
+        precheck_id = _ng_while_precheck_task_ids[0]
+        precheck_payload = ti.xcom_pull(task_ids=precheck_id)
+        if isinstance(precheck_payload, dict):
+            # Prefer the pre-check result so we avoid re-reading condition tasks.
+            condition_value = bool(precheck_payload.get("condition"))
+    if condition_value is None:
+        condition_value, _condition_values = _evaluate_while_condition(
+            ti=ti,
+            condition_specs=_ng_while_condition_specs,
+        )
 
     while_state = runtime_context.setdefault(_NG_WHILE_STATE_KEY, {})
     current_iterations = int(while_state.get(_ng_while_zone, 0))
@@ -738,6 +746,7 @@ def airflow_while_check_task(
             payload=runtime_context,
         )
         try:
+            # Clear condition + body tasks so the scheduler can run the next iteration.
             reset_ids = list(_ng_while_child_task_ids) + list(
                 _ng_while_condition_task_ids
             )
@@ -756,6 +765,7 @@ def airflow_while_check_task(
         from airflow.exceptions import AirflowRescheduleException
         from airflow.sdk import timezone
 
+        # Reschedule this task instead of looping in-place to release the worker slot.
         raise AirflowRescheduleException(timezone.utcnow())
 
     return {
@@ -782,4 +792,25 @@ def airflow_while_precheck_task(
         from airflow.exceptions import AirflowSkipException
 
         raise AirflowSkipException("While condition evaluated to False")
+    return {"condition": True}
+
+
+def airflow_if_precheck_task(
+    *,
+    _ng_if_condition_specs: List[IncomingSpec],
+    **context: Any,
+) -> Dict[str, Any]:
+    """If-zone guard: skip body tasks when the condition is false."""
+    ti = context.get("ti")
+    if ti is None:
+        raise RuntimeError("Task instance context is required for if pre-check task")
+
+    condition_value, _condition_values = _evaluate_while_condition(
+        ti=ti,
+        condition_specs=_ng_if_condition_specs,
+    )
+    if not condition_value:
+        from airflow.exceptions import AirflowSkipException
+
+        raise AirflowSkipException("If condition evaluated to False")
     return {"condition": True}
