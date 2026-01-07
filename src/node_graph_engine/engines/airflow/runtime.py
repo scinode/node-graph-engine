@@ -681,6 +681,7 @@ def airflow_while_check_task(
     _ng_while_condition_task_ids: List[str],
     _ng_while_child_task_ids: List[str],
     _ng_while_precheck_task_ids: Optional[List[str]] = None,
+    _ng_while_nested_control_task_ids: Optional[List[str]] = None,
     _ng_while_max_iterations: int,
     _ng_ctx_updates: Optional[List[Dict[str, str]]] = None,
     _ng_runtime_context_task_id: Optional[str] = None,
@@ -752,6 +753,8 @@ def airflow_while_check_task(
             )
             if _ng_while_precheck_task_ids:
                 reset_ids.extend(list(_ng_while_precheck_task_ids))
+            if _ng_while_nested_control_task_ids:
+                reset_ids.extend(list(_ng_while_nested_control_task_ids))
             _reset_task_instances_via_api(
                 dag_id=dag_run.dag_id,
                 run_id=dag_run.run_id,

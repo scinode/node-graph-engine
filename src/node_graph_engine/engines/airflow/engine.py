@@ -234,6 +234,15 @@ class AirflowEngine(BaseEngine):
                 parent_task = getattr(parent_task, "parent", None)
             return None
 
+        def _is_within_zone(task_obj, zone_name: str) -> bool:
+            # Check if the task is nested inside a specific zone (any depth).
+            parent_task = getattr(task_obj, "parent", None)
+            while parent_task is not None:
+                if parent_task.name == zone_name:
+                    return True
+                parent_task = getattr(parent_task, "parent", None)
+            return False
+
         def _collect_zone_descendants(zone_task) -> List[str]:
             # Gather non-zone tasks that live under a zone (used for wiring).
             collected: List[str] = []
@@ -249,6 +258,25 @@ class AirflowEngine(BaseEngine):
                     continue
                 seen.add(child_name)
                 if child_name not in zone_groups:
+                    collected.append(child_name)
+                stack.extend(list(getattr(child_task, "children", [])))
+            return collected
+
+        def _collect_zone_descendant_zones(zone_task) -> List[str]:
+            # Gather nested zone names so we can reset their control tasks.
+            collected: List[str] = []
+            seen: set[str] = set()
+            stack = list(getattr(zone_task, "children", []))
+            while stack:
+                child = stack.pop()
+                child_task = child if hasattr(child, "name") else ng.tasks.get(child)
+                if child_task is None:
+                    continue
+                child_name = child_task.name
+                if child_name in seen:
+                    continue
+                seen.add(child_name)
+                if child_name in zone_groups:
                     collected.append(child_name)
                 stack.extend(list(getattr(child_task, "children", [])))
             return collected
@@ -356,6 +384,7 @@ class AirflowEngine(BaseEngine):
                     spec["from_task_id"] = task_id_map[from_task]
 
         while_check_tasks: Dict[str, PythonOperator] = {}
+        while_precheck_tasks: Dict[str, PythonOperator] = {}
         condition_task_zone: Dict[str, str] = {}
         for zone_name, zone_task in while_zones.items():
             # While semantics in Airflow:
@@ -400,6 +429,7 @@ class AirflowEngine(BaseEngine):
                     "_ng_while_condition_specs": condition_specs,
                 },
             )
+            while_precheck_tasks[zone_name] = pre_check_task
             check_task = PythonOperator(
                 task_id="check_condition_tail",
                 dag=dag,
@@ -488,6 +518,25 @@ class AirflowEngine(BaseEngine):
                         # Allow downstream to proceed when if-body is skipped.
                         tasks[target_name].trigger_rule = "none_failed"
 
+        for zone_name, zone_task in while_zones.items():
+            nested_zones = _collect_zone_descendant_zones(zone_task)
+            nested_control_ids: List[str] = []
+            for nested_name in nested_zones:
+                precheck_task = if_check_tasks.get(nested_name)
+                if precheck_task is not None:
+                    nested_control_ids.append(precheck_task.task_id)
+                nested_precheck = while_precheck_tasks.get(nested_name)
+                if nested_precheck is not None:
+                    nested_control_ids.append(nested_precheck.task_id)
+                nested_tail = while_check_tasks.get(nested_name)
+                if nested_tail is not None:
+                    nested_control_ids.append(nested_tail.task_id)
+            if nested_control_ids:
+                # Ensure nested zone control tasks are cleared each iteration.
+                while_check_tasks[zone_name].op_kwargs[
+                    "_ng_while_nested_control_task_ids"
+                ] = nested_control_ids
+
         for ctx_key, readers in ctx_readers_by_key.items():
             writers = ctx_writers_by_key.get(ctx_key, [])
             for reader_name in readers:
@@ -507,6 +556,9 @@ class AirflowEngine(BaseEngine):
                         while_check_tasks[writer_zone] >> tasks[reader_name]
                         continue
                     if writer_zone is not None and writer_zone != reader_zone:
+                        if _is_within_zone(ng.tasks[reader_name], writer_zone):
+                            # Avoid cycles for nested zones within the same while loop.
+                            continue
                         check_task = while_check_tasks.get(writer_zone)
                         if check_task is not None:
                             # Cross-zone ctx reads also wait for the writer's tail check.
