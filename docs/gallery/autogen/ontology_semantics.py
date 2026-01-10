@@ -200,7 +200,8 @@ graph = workflow.build(structure="test")
 engine = LocalEngine()
 outputs = engine.run(graph)
 structure_node = orm.load_node(engine._graph_pid).inputs.structure
-print(json.dumps(structure_node.base.extras.get("semantics"), indent=2))
+semantics_payload = structure_node.base.extras.all.get("semantics_ref")
+print(json.dumps(semantics_payload, indent=2))
 
 # %%
 # Attaching semantics inside workflows
@@ -261,7 +262,12 @@ def workflow(
 graph = workflow.build(structure="test")
 engine = LocalEngine()
 outputs = engine.run(graph)
-print(json.dumps(outputs["output_structure"].base.extras.get("semantics"), indent=2))
+print(
+    json.dumps(
+        outputs["output_structure"].base.extras.all.get("semantics_ref"),
+        indent=2,
+    )
+)
 
 # %%
 # When building the graph, the AiiDA data is not yet available, so we pass
@@ -466,21 +472,16 @@ else:
     print("\nGraph result:", outputs)
 
     for label, output in outputs.items():
-        payload = output.base.extras.get("semantics")
+        payload = output.base.extras.all.get("semantics_ref")
         print(f"\nOutput '{label}' semantics records:")
         print(json.dumps(payload, indent=2))
 
     workflow_node = orm.load_node(engine._graph_pid)
     outgoing = workflow_node.base.links.get_outgoing()
     for entry in outgoing:
-        try:
-            semantics_payload = entry.node.base.extras.get("semantics")
-        except AttributeError:
-            semantics_payload = None
-        if semantics_payload:
-            print(
-                f"\nData node '{entry.link_label}' carries {len(semantics_payload)} semantic entries."
-            )
+        semantics_ref = entry.node.base.extras.all.get("semantics_ref")
+        if semantics_ref:
+            print(f"\nData node '{entry.link_label}' carries a semantics reference.")
 
 
 # %%
