@@ -44,6 +44,18 @@ jobs:
         image: rabbitmq:latest
         ports:
         -   5672:5672
+      neo4j:
+        image: neo4j:latest
+        env:
+          NEO4J_AUTH: neo4j/secretgraph
+        ports:
+        -   7474:7474
+        -   7687:7687
+        options: >-
+          --health-cmd "cypher-shell -u neo4j -p secretgraph 'RETURN 1'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     strategy:
       matrix:
         python-version: ["3.11"]
@@ -63,7 +75,19 @@ jobs:
         run: |
           pip install -e .[tests,jobflow,parsl,prefect,executorlib,redun,dagster,dask]
           verdi presto
+      - name: Wait for Neo4j
+        run: |
+          for i in {1..30}; do
+            nc -z localhost 7687 && exit 0
+            sleep 2
+          done
+          echo "Neo4j did not become ready in time" >&2
+          exit 1
       - name: Run pytest
+        env:
+          NODE_GRAPH_NEO4J_URI: bolt://localhost:7687
+          NODE_GRAPH_NEO4J_USER: neo4j
+          NODE_GRAPH_NEO4J_PASSWORD: secretgraph
         run: |
           cd tests
           pytest -v --cov
