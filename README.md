@@ -8,7 +8,7 @@ Execute node-graph workflows across multiple engines with consistent, provenance
 
 ## Features
 
-- Run the same workflow across multiple backends (local, Dask, Airflow, Prefect, Dagster, Celery, Parsl, Redun, Jobflow, Executorlib)
+- Run the same workflow across multiple backends (local, Dask, Airflow, Prefect, Temporal, Dagster, Celery, Parsl, Redun, Jobflow, Executorlib)
 - Uniform provenance capture powered by AiiDA for interoperability and reproducibility
 - Simple Python-first API via the node-graph decorators (@task, @task.graph)
 - Optional extras to install only the engines you need
@@ -27,6 +27,7 @@ node-graph Engine ships adaptors for a range of orchestration backends. Pick the
 | [Dask](https://node-graph-engine.readthedocs.io/en/latest/engines/dask.html) | Execute task jobs through Dask's threaded scheduler, keeping provenance in the local AiiDA profile while resolving dependencies and nested graphs automatically. |
 | [Celery](https://node-graph-engine.readthedocs.io/en/latest/engines/celery.html) | Submit nodes as Celery tasks so you can leverage existing brokers and workers while persisting provenance in AiiDA. |
 | [Prefect](https://node-graph-engine.readthedocs.io/en/latest/engines/prefect.html) | Execute graphs as Prefect flows while streaming provenance back to the recorder. |
+| [Temporal](https://node-graph-engine.readthedocs.io/en/latest/engines/temporal.html) | Run graphs as Temporal workflows and activities with Temporal's durability and visibility. |
 | [Parsl](https://node-graph-engine.readthedocs.io/en/latest/engines/parsl.html) | Dispatch tasks to Parsl executors for parallel and distributed execution without losing provenance fidelity. |
 | [Redun](https://node-graph-engine.readthedocs.io/en/latest/engines/redun.html) | Integrate with Redun workflows while preserving provenance throughout execution. |
 | [Jobflow](https://node-graph-engine.readthedocs.io/en/latest/engines/jobflow.html) | Bridge to the Jobflow workflow system for materials science workloads with consistent provenance records. |
@@ -54,6 +55,9 @@ pip install node_graph_engine[celery]
 
 # Dask
 pip install node_graph_engine[dask]
+
+# Temporal
+pip install node_graph_engine[temporal]
 
 # Parsl
 pip install node_graph_engine[parsl]

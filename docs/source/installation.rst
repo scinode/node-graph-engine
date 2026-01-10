@@ -29,6 +29,9 @@ extras. Install only the engines you plan to use:
    setup in :ref:`engines-celery` without installing additional broker drivers. Swap the
    dependency to match the broker you intend to use (for example RabbitMQ).
 
+   # Install with Temporal support
+   pip install node_graph_engine[temporal]
+
    # Install with Dask support
    pip install node_graph_engine[dask]
 
