@@ -18,7 +18,7 @@ from ..core.utils import (
     close_threadlocal_aiida_session,
     update_nested_dict_with_special_keys,
 )
-from ..orm.data.knowledge_graph import persist_workflow_knowledge_graph
+from ..neo4j.knowledge_graph import persist_workflow_knowledge_graph
 from aiida import orm
 
 

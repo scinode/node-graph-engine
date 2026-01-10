@@ -16,7 +16,8 @@ from aiida_pythonjob.calculations.pyfunction import PyFunction
 from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
 from aiida_pythonjob.data.serializer import all_serializers
 from aiida_pythonjob.parsers.utils import parse_outputs
-from node_graph import Graph, task
+from aiida_pythonjob.utils import serialize_ports
+from node_graph import Graph
 from node_graph.executor import RuntimeExecutor
 from node_graph.graph import BUILTIN_TASKS
 from node_graph.task_spec import TaskHandle
@@ -162,8 +163,26 @@ def execute_task_job(
 ) -> Dict[str, Any]:
     meta_obj = _ensure_meta(meta)
     parent_calc_node = orm.load_node(parent_pid) if parent_pid else None
-    inputs = _decode_runtime_inputs(runtime_inputs)
+    try:
+        inputs = _decode_runtime_inputs(runtime_inputs)
+    except Exception as exc:
+        raise TypeError(
+            f"Task {meta_obj.node_name!r} failed while decoding runtime inputs: {exc}"
+        ) from exc
     inputs = update_nested_dict_with_special_keys(inputs)
+    if not meta_obj.is_graph and node_inputs is not None:
+        try:
+            inputs_spec = SocketSpec.from_dict(node_inputs)
+            inputs = serialize_ports(
+                python_data=inputs,
+                port_schema=inputs_spec,
+                serializers=all_serializers,
+                user=user,
+            )
+        except Exception as exc:
+            raise TypeError(
+                f"Task {meta_obj.node_name!r} failed while serializing runtime inputs: {exc}"
+            ) from exc
     callable_obj = _resolve_callable(callable_payload, meta_obj.node_name)
 
     if not meta_obj.is_graph:
@@ -195,7 +214,12 @@ def execute_task_job(
             }
             if user is not None:
                 parse_kwargs["user"] = user
-            outputs, exit_code = parse_outputs(results, **parse_kwargs)
+            try:
+                outputs, exit_code = parse_outputs(results, **parse_kwargs)
+            except Exception as exc:
+                raise TypeError(
+                    f"Task {meta_obj.node_name!r} failed while parsing outputs: {exc}"
+                ) from exc
             if exit_code is not None and exit_code.status != 0:
                 process_node.set_exit_status(exit_code.status)
                 process_node.set_exit_message(exit_code.message)
@@ -220,7 +244,7 @@ def execute_task_job(
 
     inputs_spec = SocketSpec.from_dict(node_inputs or {})
     outputs_spec = SocketSpec.from_dict(node_outputs or {})
-    callable_obj.__globals__[callable_obj.__name__] = task.graph()(callable_obj)
+    # callable_obj.__globals__[callable_obj.__name__] = task.graph()(callable_obj)
     sub_ng = materialize_graph(
         callable_obj,
         inputs_spec,

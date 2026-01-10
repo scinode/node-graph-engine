@@ -263,6 +263,10 @@ def _attach_semantics_references(
 
     visited: set[str] = set()
 
+    run_id = str(
+        getattr(process_node, "uuid", None) or getattr(process_node, "pk", None)
+    )
+
     def _walk(proc: orm.ProcessNode) -> None:
         for child in getattr(proc, "called", []) or []:
             _walk(child)
@@ -285,6 +289,7 @@ def _attach_semantics_references(
             canonical_socket = canonical_socket.replace("__", ".")
             ref = {
                 "knowledge_graph_uuid": str(knowledge_uuid),
+                "run_id": run_id,
                 "task": process_label,
                 "socket": raw_label,
                 "canonical_socket": canonical_socket,

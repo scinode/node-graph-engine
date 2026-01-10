@@ -32,7 +32,7 @@ from node_graph_engine.core.utils import (
     update_nested_dict,
     update_nested_dict_with_special_keys,
 )
-from node_graph_engine.orm.data.knowledge_graph import persist_workflow_knowledge_graph
+from node_graph_engine.neo4j.knowledge_graph import persist_workflow_knowledge_graph
 from node_graph_engine.core.task import TaskMeta
 
 from .async_request import AsyncNodeExecutionRequest

@@ -180,7 +180,10 @@ def _decode_aiida_node(value: Any) -> Any:
         if _RUNTIME_TUPLE_MARKER in value:
             return tuple(_decode_aiida_node(v) for v in value[_RUNTIME_TUPLE_MARKER])
         return {k: _decode_aiida_node(v) for k, v in value.items()}
-    raise TypeError(f"Cannot decode value of type: {type(value)}")
+    if isinstance(value, (list, tuple)):
+        container = type(value)
+        return container(_decode_aiida_node(v) for v in value)
+    return value
 
 
 def _encode_runtime_inputs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
@@ -188,7 +191,15 @@ def _encode_runtime_inputs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _decode_runtime_inputs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: _decode_aiida_node(value) for key, value in kwargs.items()}
+    decoded: Dict[str, Any] = {}
+    for key, value in kwargs.items():
+        try:
+            decoded[key] = _decode_aiida_node(value)
+        except Exception as exc:
+            raise TypeError(
+                f"Cannot decode runtime input {key!r} (type {type(value)}): {exc}"
+            ) from exc
+    return decoded
 
 
 def close_threadlocal_aiida_session() -> None:

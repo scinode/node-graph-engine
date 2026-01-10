@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from aiida import orm
+import pytest
 from node_graph import task
 from node_graph.socket_spec import meta
 from node_graph.semantics import SemanticTag
 from node_graph.semantics import attach_semantics, attribute_ref
 from node_graph_engine.engines.local import LocalEngine
+from node_graph_engine.neo4j.knowledge_graph import fetch_knowledge_graph
 from typing import Annotated
 
 
@@ -65,14 +67,15 @@ SEMANTICS_TAG_EXAMPLE = SemanticTag(
 
 
 def _load_knowledge_graph(process_node: orm.ProcessNode):
-    """Return (KG node, semantics payload) for the workflow."""
+    """Return (KG UUID, semantics payload) for the workflow."""
 
     kg_uuid = process_node.base.extras.get("knowledge_graph_uuid")
     assert kg_uuid is not None
-    kg = orm.load_node(kg_uuid)
-    payload = kg.get_dict()
-    semantics = payload.get("semantics") or payload
-    return kg, semantics
+    try:
+        semantics = fetch_knowledge_graph(str(kg_uuid))
+    except Exception as exc:  # pragma: no cover - requires running Neo4j service
+        pytest.skip(f"Neo4j knowledge graph unavailable: {exc}")
+    return kg_uuid, semantics
 
 
 def test_nested_graph(nested_graph) -> None:
