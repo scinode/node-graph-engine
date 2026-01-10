@@ -28,7 +28,6 @@ from ..core.execution import (
     prepare_graph_run,
     _scan_links_topology,
 )
-from ..core.semantics import TaskSemantics
 from ..core.task import EngineTaskExecutor, TaskMeta
 from ..core.utils import (
     _collect_literals,
@@ -349,7 +348,6 @@ class DagsterEngine(BaseEngine):
         def _finalize_graph_op(context, engine_context, **node_results):
             graph_pid = engine_context["graph_pid"]
             process_node = self._load_process_node(graph_pid)
-            semantics_spec = TaskSemantics.from_dict(engine_context.get("semantics"))
 
             success = False
             try:

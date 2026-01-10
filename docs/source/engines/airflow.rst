@@ -141,6 +141,68 @@ Tasks implemented as ``async`` functions are converted into Airflow Deferrable
 Operators with matching triggers. This lets you take advantage of Airflow's asynchronous
 execution model without changing your Graph task definitions.
 
+
+
+If/While zones
+--------------
+Airflow also supports ``If`` and ``While`` zones defined in ``node-graph``. These are
+compiled into TaskGroups with condition checks and body tasks.
+
+Here is an example of sum of even numbers using ``If`` and ``While`` zones.
+
+.. code-block:: python
+
+   from aiida import load_profile
+   from node_graph import task, get_current_graph
+   from node_graph.manager import If, While
+   from node_graph_engine.engines.airflow import AirflowEngine
+
+   load_profile()
+
+   @task()
+   def smaller_than(x, y):
+      return x < y
+
+   @task()
+   def add(x, y):
+      return x + y
+
+   @task()
+   def is_even(x):
+      return x % 2 == 0
+
+   @task.graph()
+   def while_with_if(index=0, limit=10,
+                     total=0,
+                     increment=1):
+
+      graph = get_current_graph()
+      graph.ctx.total = total
+      graph.ctx.index = index
+      condition = smaller_than(graph.ctx.index, limit).result
+
+      with While(condition):
+         is_even_cond = is_even(graph.ctx.index).result
+         with If(is_even_cond) as if_zone:
+               graph.ctx.total = add(x=graph.ctx.total, y=graph.ctx.index).result
+         next_index = add(x=graph.ctx.index, y=increment).result
+         graph.ctx.index = next_index
+         if_zone >> next_index
+
+      return graph.ctx.total
+
+   graph = while_with_if.build(index=1, limit=5, increment=1, total=0)
+   engine = AirflowEngine("test_sum_even_numbers")
+
+   dag = engine.build_dag(graph)
+
+
+Here is the resulting graph:
+
+.. image:: ../_static/images/airflow_if_while_zone.png
+   :alt: Provenance graph for the add_then_multiply workflow
+
+
 Under the hood
 ---------------
 
