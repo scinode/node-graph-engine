@@ -1,6 +1,6 @@
 # trigger the decorator import
 from .decorator import decorator_remote_task
-from .property import TaskProperty # trigger the property adaptor registration
+from .property import TaskProperty  # trigger the property adaptor registration
 
 __all__ = [
     "decorator_remote_task",

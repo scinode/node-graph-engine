@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import json
-import sys
 from typing import Sequence
 
 import click
-
-from node_graph.knowledge.graph import KnowledgeGraph
 
 from node_graph_engine.neo4j.knowledge_graph import (
     fetch_all_knowledge_graphs,
     fetch_knowledge_graph,
     _get_neo4j_driver,
 )
+
 
 def _truncate(value: object, max_len: int = 80) -> str:
     text = str(value)
@@ -62,7 +60,8 @@ def _format_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) -> s
     header_line = sep.join(h.ljust(widths[i]) for i, h in enumerate(headers))
     divider = "-+-".join("-" * widths[i] for i in range(len(headers)))
     body = "\n".join(
-        sep.join(cell.ljust(widths[i]) for i, cell in enumerate(row)) for row in rendered
+        sep.join(cell.ljust(widths[i]) for i, cell in enumerate(row))
+        for row in rendered
     )
     return "\n".join([header_line, divider, body])
 
@@ -80,7 +79,9 @@ def list_kg(scope: str, limit: int | None, as_json: bool) -> None:
     """List knowledge graphs stored in Neo4j."""
 
     if fetch_all_knowledge_graphs is None:
-        click.echo("Knowledge graph listing unavailable (missing engine dependency)", err=True)
+        click.echo(
+            "Knowledge graph listing unavailable (missing engine dependency)", err=True
+        )
         raise SystemExit(1)
     try:
         graphs = fetch_all_knowledge_graphs(scope=scope) or []
@@ -128,9 +129,26 @@ def list_kg(scope: str, limit: int | None, as_json: bool) -> None:
     is_flag=True,
     help="Only return semantics (namespaces/sockets/triples).",
 )
-@click.option("--namespaces", "show_namespaces", is_flag=True, help="Include namespaces in pretty output.")
-@click.option("--max-sockets", type=int, default=20, show_default=True, help="Max sockets to print in pretty output.")
-@click.option("--max-triples", type=int, default=20, show_default=True, help="Max triples to print in pretty output.")
+@click.option(
+    "--namespaces",
+    "show_namespaces",
+    is_flag=True,
+    help="Include namespaces in pretty output.",
+)
+@click.option(
+    "--max-sockets",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Max sockets to print in pretty output.",
+)
+@click.option(
+    "--max-triples",
+    type=int,
+    default=20,
+    show_default=True,
+    help="Max triples to print in pretty output.",
+)
 def show_kg(
     uuid: str,
     as_json: bool,
@@ -142,7 +160,9 @@ def show_kg(
     """Show a knowledge graph payload by UUID."""
 
     if fetch_knowledge_graph is None:
-        click.echo("Knowledge graph fetch unavailable (missing engine dependency)", err=True)
+        click.echo(
+            "Knowledge graph fetch unavailable (missing engine dependency)", err=True
+        )
         raise SystemExit(1)
     try:
         payload = fetch_knowledge_graph(uuid, include_metadata=not exclude_metadata)
@@ -154,7 +174,11 @@ def show_kg(
         return
 
     wrapper = payload if isinstance(payload, dict) else {}
-    semantics = wrapper.get("semantics") if isinstance(wrapper.get("semantics"), dict) else wrapper
+    semantics = (
+        wrapper.get("semantics")
+        if isinstance(wrapper.get("semantics"), dict)
+        else wrapper
+    )
     sockets = semantics.get("sockets") if isinstance(semantics, dict) else {}
     triples = semantics.get("triples") if isinstance(semantics, dict) else []
     namespaces = semantics.get("namespaces") if isinstance(semantics, dict) else {}
@@ -165,11 +189,19 @@ def show_kg(
     )
 
     if not exclude_metadata and isinstance(wrapper, dict) and "semantics" in wrapper:
-        meta_rows = [(k, v) for k, v in sorted(_flatten_metadata(wrapper)) if v not in (None, {}, [])]
+        meta_rows = [
+            (k, v)
+            for k, v in sorted(_flatten_metadata(wrapper))
+            if v not in (None, {}, [])
+        ]
         if meta_rows:
             click.echo("")
             click.echo("Metadata")
-            click.echo(_format_table(["Key", "Value"], [[k, _truncate(v, 120)] for k, v in meta_rows]))
+            click.echo(
+                _format_table(
+                    ["Key", "Value"], [[k, _truncate(v, 120)] for k, v in meta_rows]
+                )
+            )
 
     if show_namespaces and isinstance(namespaces, dict) and namespaces:
         click.echo("")
@@ -196,7 +228,11 @@ def show_kg(
                     _truncate(meta.get("canonical") or sid, 50),
                 ]
             )
-        click.echo(_format_table(["ID", "Label", "Task", "Dir", "Port", "Canonical"], socket_rows))
+        click.echo(
+            _format_table(
+                ["ID", "Label", "Task", "Dir", "Port", "Canonical"], socket_rows
+            )
+        )
         remaining = len(socket_items) - len(shown)
         if remaining > 0:
             click.echo(f"... ({remaining} more sockets; use --max-sockets to increase)")
@@ -209,7 +245,9 @@ def show_kg(
         for triple in shown:
             if isinstance(triple, (list, tuple)) and len(triple) == 3:
                 s, p, o = triple
-                triple_rows.append([_truncate(s, 60), _truncate(p, 50), _truncate(o, 80)])
+                triple_rows.append(
+                    [_truncate(s, 60), _truncate(p, 50), _truncate(o, 80)]
+                )
             else:
                 triple_rows.append(["", "", _truncate(triple, 160)])
         click.echo(_format_table(["Subject", "Predicate", "Object"], triple_rows))
@@ -220,7 +258,9 @@ def show_kg(
 
 @knowledge_graph.command("delete")
 @click.argument("uuids", nargs=-1)
-@click.option("-a", "--all", "delete_all", is_flag=True, help="Delete all knowledge graphs.")
+@click.option(
+    "-a", "--all", "delete_all", is_flag=True, help="Delete all knowledge graphs."
+)
 @click.option("--force", is_flag=True, help="Do not prompt for confirmation.")
 def delete_kg(uuids: tuple[str, ...], delete_all: bool, force: bool) -> None:
     """Delete one or more knowledge graphs (and their sockets/values)."""
@@ -229,16 +269,21 @@ def delete_kg(uuids: tuple[str, ...], delete_all: bool, force: bool) -> None:
         click.echo("Provide either one or more UUIDs or -a/--all, not both.", err=True)
         raise SystemExit(1)
     if not delete_all and not uuids:
-        click.echo("Provide at least one UUID or use -a/--all to delete everything.", err=True)
+        click.echo(
+            "Provide at least one UUID or use -a/--all to delete everything.", err=True
+        )
         raise SystemExit(1)
 
     driver = _get_neo4j_driver()
     with driver.session() as session:
         target_uuids: list[str]
         if delete_all:
-            record = session.run(
-                "MATCH (kg:KnowledgeGraph) RETURN collect(kg.uuid) AS uuids"
-            ).single() or {}
+            record = (
+                session.run(
+                    "MATCH (kg:KnowledgeGraph) RETURN collect(kg.uuid) AS uuids"
+                ).single()
+                or {}
+            )
             target_uuids = list(record.get("uuids") or [])
         else:
             target_uuids = list(uuids)
@@ -248,8 +293,9 @@ def delete_kg(uuids: tuple[str, ...], delete_all: bool, force: bool) -> None:
             return
 
         def _fetch_counts(graph_uuid: str) -> dict[str, int]:
-            record = session.run(
-                """
+            record = (
+                session.run(
+                    """
                 MATCH (kg:KnowledgeGraph {uuid: $uuid})
                 OPTIONAL MATCH (kg)-[:HAS_SOCKET]->(s:Socket)
                 OPTIONAL MATCH (s)-[:TRIPLE]->(v)
@@ -257,8 +303,10 @@ def delete_kg(uuids: tuple[str, ...], delete_all: bool, force: bool) -> None:
                        count(DISTINCT s) AS socket_cnt,
                        count(DISTINCT v) AS value_cnt
                 """,
-                uuid=graph_uuid,
-            ).single() or {}
+                    uuid=graph_uuid,
+                ).single()
+                or {}
+            )
             return {
                 "kg_cnt": int(record.get("kg_cnt", 0)),
                 "socket_cnt": int(record.get("socket_cnt", 0)),
@@ -304,7 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     """Debug runner; primary use is via the node-graph CLI plugin."""
 
     try:
-        knowledge_graph.main(args=argv, prog_name="node-graph knowledge-graph", standalone_mode=False)
+        knowledge_graph.main(
+            args=argv, prog_name="node-graph knowledge-graph", standalone_mode=False
+        )
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 1
     return 0

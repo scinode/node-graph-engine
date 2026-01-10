@@ -11,7 +11,7 @@ Install Neo4j
 
 
 .. code-block:: bash
-  
+
   pip install neo4j
   docker run   -p7474:7474    -p7687:7687    -d    -e NEO4J_AUTH=neo4j/secretgraph    neo4j:latest
   export NODE_GRAPH_NEO4J_URI="neo4j://localhost"

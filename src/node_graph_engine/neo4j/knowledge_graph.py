@@ -11,7 +11,6 @@ from uuid import UUID, uuid4
 
 from aiida import orm
 from aiida.common.links import LinkType
-from node_graph.knowledge.graph import KnowledgeGraph
 
 try:  # pragma: no cover - optional dependency
     from neo4j import GraphDatabase
@@ -130,7 +129,9 @@ def _value_kind(obj: Any) -> str:
     return "string"
 
 
-def _prepare_sockets(sockets: Dict[str, Dict[str, Any]], kg_hash: str) -> List[Dict[str, Any]]:
+def _prepare_sockets(
+    sockets: Dict[str, Dict[str, Any]], kg_hash: str
+) -> List[Dict[str, Any]]:
     prepared: List[Dict[str, Any]] = []
     for sid, meta in sockets.items():
         canonical = meta.get("canonical") or sid
@@ -208,7 +209,13 @@ def _prepare_triples(
             concept_triples.append(entry)
         else:
             data_value_triples.append(entry)
-    return socket_triples, data_value_triples, attr_ref_triples, term_triples, concept_triples
+    return (
+        socket_triples,
+        data_value_triples,
+        attr_ref_triples,
+        term_triples,
+        concept_triples,
+    )
 
 
 def _is_valid_uuid(value: Any) -> bool:
@@ -461,8 +468,14 @@ def store_knowledge_graph(payload: Dict[str, Any]) -> str:
     kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
     workflow_meta = payload.get("workflow") or {}
     workflow_name = workflow_meta.get("name") or workflow_meta.get("identifier")
-    workflow_identifier = workflow_meta.get("identifier") or workflow_meta.get("qualname")
-    graph_uuid = payload.get("graph_uuid") or semantics.get("graph_uuid") or semantics.get("dag_id")
+    workflow_identifier = workflow_meta.get("identifier") or workflow_meta.get(
+        "qualname"
+    )
+    graph_uuid = (
+        payload.get("graph_uuid")
+        or semantics.get("graph_uuid")
+        or semantics.get("dag_id")
+    )
     if not graph_uuid:
         graph_uuid = str(uuid4())
     sockets = semantics.get("sockets") or {}
@@ -483,7 +496,13 @@ def store_knowledge_graph(payload: Dict[str, Any]) -> str:
     namespaces = semantics.get("namespaces") or semantics.get("context") or {}
     namespaces_json = _serialize_json(namespaces)
     workflow_json = _serialize_json(payload.get("workflow", {}))
-    socket_triples, data_value_triples, attr_ref_triples, term_triples, concept_triples = _prepare_triples(
+    (
+        socket_triples,
+        data_value_triples,
+        attr_ref_triples,
+        term_triples,
+        concept_triples,
+    ) = _prepare_triples(
         semantics.get("triples", []),
         sockets.keys(),
         namespaces=namespaces,
@@ -505,7 +524,9 @@ def store_knowledge_graph(payload: Dict[str, Any]) -> str:
             kg_uuid=kg_uuid,
             workflow_json=workflow_json,
             workflow_name=str(workflow_name) if workflow_name else None,
-            workflow_identifier=str(workflow_identifier) if workflow_identifier else None,
+            workflow_identifier=str(workflow_identifier)
+            if workflow_identifier
+            else None,
             namespaces_json=namespaces_json,
             scope=payload.get("scope"),
             engine_kind=payload.get("engine_kind"),
@@ -525,7 +546,9 @@ def store_knowledge_graph(payload: Dict[str, Any]) -> str:
     return kg_uuid
 
 
-def fetch_knowledge_graph(graph_uuid: str, *, include_metadata: bool = False) -> Dict[str, Any]:
+def fetch_knowledge_graph(
+    graph_uuid: str, *, include_metadata: bool = False
+) -> Dict[str, Any]:
     """Fetch a knowledge graph payload from Neo4j by UUID.
 
     By default this returns the semantics payload (namespaces/sockets/triples).
@@ -554,9 +577,36 @@ def fetch_knowledge_graph(graph_uuid: str, *, include_metadata: bool = False) ->
                         WHEN 'Socket' IN labels(obj) THEN [sub.id, r.predicate, obj.id]
                         WHEN 'Term' IN labels(obj) THEN [sub.id, r.predicate, obj.curie]
                         WHEN 'Concept' IN labels(obj) THEN [sub.id, r.predicate, obj.text]
-                        WHEN 'AttrRef' IN labels(obj) THEN [sub.id, r.predicate, coalesce(r.literal_json, obj.value_json, r.literal_value, obj.value)]
-                        WHEN 'DataValue' IN labels(obj) THEN [sub.id, r.predicate, coalesce(r.literal_json, obj.value_json, r.literal_value, obj.value)]
-                        WHEN 'Scalar' IN labels(obj) THEN [sub.id, r.predicate, coalesce(r.literal_json, obj.value_json, r.literal_value, obj.value)]
+                        WHEN 'AttrRef' IN labels(obj) THEN [
+                            sub.id,
+                            r.predicate,
+                            coalesce(
+                                r.literal_json,
+                                obj.value_json,
+                                r.literal_value,
+                                obj.value
+                            )
+                        ]
+                        WHEN 'DataValue' IN labels(obj) THEN [
+                            sub.id,
+                            r.predicate,
+                            coalesce(
+                                r.literal_json,
+                                obj.value_json,
+                                r.literal_value,
+                                obj.value
+                            )
+                        ]
+                        WHEN 'Scalar' IN labels(obj) THEN [
+                            sub.id,
+                            r.predicate,
+                            coalesce(
+                                r.literal_json,
+                                obj.value_json,
+                                r.literal_value,
+                                obj.value
+                            )
+                        ]
                         ELSE null
                     END
                 ) AS triples
@@ -657,6 +707,7 @@ def fetch_all_knowledge_graphs(scope: Optional[str] = None) -> List[Dict[str, An
         )
     return summaries
 
+
 def build_workflow_knowledge_payload(
     *,
     graph: Any,
@@ -667,7 +718,9 @@ def build_workflow_knowledge_payload(
         definition = metadata["definition"]
     else:
         definition = metadata
-    identifier = definition.get("task_identifier") if isinstance(definition, dict) else None
+    identifier = (
+        definition.get("task_identifier") if isinstance(definition, dict) else None
+    )
     if identifier is None:
         identifier = getattr(graph, "name", None)
 
@@ -687,12 +740,24 @@ def build_workflow_knowledge_payload(
         "workflow": {
             "name": getattr(graph, "name", None),
             "identifier": identifier,
-            "module": definition.get("module") if isinstance(definition, dict) else None,
-            "qualname": definition.get("qualname") if isinstance(definition, dict) else None,
-            "callable_path": definition.get("callable_path") if isinstance(definition, dict) else None,
-            "file_path": definition.get("file_path") if isinstance(definition, dict) else None,
-            "package": definition.get("package") if isinstance(definition, dict) else None,
-            "package_version": definition.get("package_version") if isinstance(definition, dict) else None,
+            "module": definition.get("module")
+            if isinstance(definition, dict)
+            else None,
+            "qualname": definition.get("qualname")
+            if isinstance(definition, dict)
+            else None,
+            "callable_path": definition.get("callable_path")
+            if isinstance(definition, dict)
+            else None,
+            "file_path": definition.get("file_path")
+            if isinstance(definition, dict)
+            else None,
+            "package": definition.get("package")
+            if isinstance(definition, dict)
+            else None,
+            "package_version": definition.get("package_version")
+            if isinstance(definition, dict)
+            else None,
         },
         "engine_kind": engine_kind,
         "semantics": semantics_payload,
@@ -737,7 +802,9 @@ def _attach_semantics_references(
 
     visited: set[str] = set()
 
-    run_id = str(getattr(process_node, "uuid", None) or getattr(process_node, "pk", None))
+    run_id = str(
+        getattr(process_node, "uuid", None) or getattr(process_node, "pk", None)
+    )
 
     def _walk(proc: orm.ProcessNode) -> None:
         for child in getattr(proc, "called", []) or []:

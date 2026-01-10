@@ -52,7 +52,7 @@ def test_delete_all_no_graphs(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert "No knowledge graphs found to delete." in result.output
-    assert session.run_calls[0][0].startswith("MATCH (kg:KnowledgeGraph)" )
+    assert session.run_calls[0][0].startswith("MATCH (kg:KnowledgeGraph)")
 
 
 def test_delete_multiple_with_confirmation(monkeypatch) -> None:

@@ -8,7 +8,7 @@ from node_graph.semantics import SemanticTag
 from node_graph.semantics import attach_semantics, attribute_ref
 from node_graph_engine.engines.local import LocalEngine
 from node_graph_engine.neo4j.knowledge_graph import fetch_knowledge_graph
-from typing import Annotated, Dict, List
+from typing import Annotated
 
 
 SEMANTICS_EXAMPLE = {
