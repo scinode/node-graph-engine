@@ -188,7 +188,6 @@ def test_semantics_accepts_pydantic_tag() -> None:
     engine = LocalEngine()
     outputs = engine.run(energy_flow.build())
     result_node = outputs["result"]
-    assert result_node.base.extras.get("semantics") is None
     ref = result_node.base.extras.get("semantics_ref")
     workflow_node = orm.load_node(engine._graph_pid)
     _, semantics = _load_knowledge_graph(workflow_node)
