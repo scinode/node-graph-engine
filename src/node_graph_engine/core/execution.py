@@ -16,7 +16,8 @@ from aiida_pythonjob.calculations.pyfunction import PyFunction
 from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
 from aiida_pythonjob.data.serializer import all_serializers
 from aiida_pythonjob.parsers.utils import parse_outputs
-from node_graph import Graph, task
+from aiida_pythonjob.utils import serialize_ports
+from node_graph import Graph
 from node_graph.executor import RuntimeExecutor
 from node_graph.graph import BUILTIN_TASKS
 from node_graph.task_spec import TaskHandle
@@ -169,6 +170,19 @@ def execute_task_job(
             f"Task {meta_obj.node_name!r} failed while decoding runtime inputs: {exc}"
         ) from exc
     inputs = update_nested_dict_with_special_keys(inputs)
+    if not meta_obj.is_graph and node_inputs is not None:
+        try:
+            inputs_spec = SocketSpec.from_dict(node_inputs)
+            inputs = serialize_ports(
+                python_data=inputs,
+                port_schema=inputs_spec,
+                serializers=all_serializers,
+                user=user,
+            )
+        except Exception as exc:
+            raise TypeError(
+                f"Task {meta_obj.node_name!r} failed while serializing runtime inputs: {exc}"
+            ) from exc
     callable_obj = _resolve_callable(callable_payload, meta_obj.node_name)
 
     if not meta_obj.is_graph:
