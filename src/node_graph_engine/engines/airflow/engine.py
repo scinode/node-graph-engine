@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from airflow import DAG
 from airflow.providers.standard.operators.python import PythonOperator
+from airflow.sdk import TaskGroup
 from node_graph import Graph
 from node_graph.graph import BUILTIN_TASKS
 
@@ -27,7 +28,14 @@ from node_graph_engine.core.utils import (
 from .async_request import _callable_is_async
 from .common import IncomingSpec, _sanitize_dag_id
 from .operators import GraphPythonOperator
-from .runtime import airflow_finalize_task, airflow_init_task, airflow_node_task
+from .runtime import (
+    airflow_finalize_task,
+    airflow_init_task,
+    airflow_node_task,
+    airflow_while_check_task,
+    airflow_while_precheck_task,
+    airflow_if_precheck_task,
+)
 from .scheduler import (
     _build_scheduler_payload,
     _trigger_registered_dag,
@@ -154,12 +162,133 @@ class AirflowEngine(BaseEngine):
             base_values = merged_values
         task_configs: Dict[str, Dict[str, Any]] = {}
         tasks: Dict[str, "PythonOperator"] = {}
+        while_zones: Dict[str, Any] = {}
+        if_zones: Dict[str, Any] = {}
+        for name in ng.get_task_names():
+            task = ng.tasks[name]
+            task_type = getattr(task.spec, "task_type", "") or ""
+            if task_type.lower() == "while":
+                while_zones[name] = task
+            elif task_type.lower() == "if":
+                if_zones[name] = task
+
+        ctx_updates_by_task: Dict[str, List[Dict[str, str]]] = {}
+        ctx_writers_by_key: Dict[str, List[str]] = {}
+        ctx_readers_by_key: Dict[str, List[str]] = {}
+        for link in incoming.get("graph_ctx", []):
+            from_task = link.from_task.name
+            if from_task in BUILTIN_TASKS:
+                continue
+            from_socket = link.from_socket._scoped_name
+            if from_socket == "_wait":
+                continue
+            to_socket = link.to_socket._scoped_name
+            ctx_updates_by_task.setdefault(from_task, []).append(
+                {
+                    "from": from_task,
+                    "from_socket": from_socket,
+                    "to_socket": to_socket,
+                }
+            )
+            ctx_writers_by_key.setdefault(to_socket, []).append(from_task)
+
+        for link in ng.links:
+            if link.from_task.name != "graph_ctx":
+                continue
+            from_socket = link.from_socket._scoped_name
+            to_task = link.to_task.name
+            if to_task in BUILTIN_TASKS:
+                continue
+            ctx_readers_by_key.setdefault(from_socket, []).append(to_task)
+
+        task_groups: Dict[str, TaskGroup] = {}
+        zone_groups = dict(while_zones)
+        zone_groups.update(if_zones)
+
+        def _ensure_task_group(zone_name: str) -> TaskGroup:
+            # Create TaskGroups for zones so nested tasks share a namespace in Airflow.
+            if zone_name in task_groups:
+                return task_groups[zone_name]
+            zone_task = ng.tasks[zone_name]
+            parent_group = None
+            parent_task = getattr(zone_task, "parent", None)
+            while parent_task is not None:
+                parent_name = parent_task.name
+                if parent_name in zone_groups:
+                    parent_group = _ensure_task_group(parent_name)
+                    break
+                parent_task = getattr(parent_task, "parent", None)
+            group = TaskGroup(group_id=zone_name, dag=dag, parent_group=parent_group)
+            task_groups[zone_name] = group
+            return group
+
+        for zone_name in zone_groups:
+            _ensure_task_group(zone_name)
+
+        def _find_parent_zone(task_obj) -> Optional[str]:
+            # Walk parent links to determine if a task is inside a zone.
+            parent_task = getattr(task_obj, "parent", None)
+            while parent_task is not None:
+                if parent_task.name in zone_groups:
+                    return parent_task.name
+                parent_task = getattr(parent_task, "parent", None)
+            return None
+
+        def _is_within_zone(task_obj, zone_name: str) -> bool:
+            # Check if the task is nested inside a specific zone (any depth).
+            parent_task = getattr(task_obj, "parent", None)
+            while parent_task is not None:
+                if parent_task.name == zone_name:
+                    return True
+                parent_task = getattr(parent_task, "parent", None)
+            return False
+
+        def _collect_zone_descendants(zone_task) -> List[str]:
+            # Gather non-zone tasks that live under a zone (used for wiring).
+            collected: List[str] = []
+            seen: set[str] = set()
+            stack = list(getattr(zone_task, "children", []))
+            while stack:
+                child = stack.pop()
+                child_task = child if hasattr(child, "name") else ng.tasks.get(child)
+                if child_task is None:
+                    continue
+                child_name = child_task.name
+                if child_name in seen:
+                    continue
+                seen.add(child_name)
+                if child_name not in zone_groups:
+                    collected.append(child_name)
+                stack.extend(list(getattr(child_task, "children", [])))
+            return collected
+
+        def _collect_zone_descendant_zones(zone_task) -> List[str]:
+            # Gather nested zone names so we can reset their control tasks.
+            collected: List[str] = []
+            seen: set[str] = set()
+            stack = list(getattr(zone_task, "children", []))
+            while stack:
+                child = stack.pop()
+                child_task = child if hasattr(child, "name") else ng.tasks.get(child)
+                if child_task is None:
+                    continue
+                child_name = child_task.name
+                if child_name in seen:
+                    continue
+                seen.add(child_name)
+                if child_name in zone_groups:
+                    collected.append(child_name)
+                stack.extend(list(getattr(child_task, "children", [])))
+            return collected
 
         for name in ng.get_task_names():
             if name in BUILTIN_TASKS:
                 continue
             task = ng.tasks[name]
             task_type = getattr(task.spec, "task_type", "") or ""
+            if task_type.lower() in ("while", "if"):
+                # Zone tasks are handled via TaskGroups and explicit pre/tail checks.
+                continue
             metadata = getattr(task.spec, "metadata", {}) or {}
             label_kind = "return" if task_type.upper() == "GRAPH" else "create"
             executor = getattr(task.spec, "executor", None)
@@ -198,6 +327,9 @@ class AirflowEngine(BaseEngine):
                 "_ng_is_async": is_async_callable,
                 "_ng_task_type": task_type,
             }
+            ctx_updates = ctx_updates_by_task.get(name)
+            if ctx_updates:
+                op_kwargs["_ng_ctx_updates"] = list(ctx_updates)
             if metadata:
                 op_kwargs["_ng_task_metadata"] = dict(metadata)
             if runtime_context_task_id is not None:
@@ -205,9 +337,15 @@ class AirflowEngine(BaseEngine):
             else:
                 op_kwargs["_ng_base_values"] = base_values
 
+            task_group = None
+            parent_zone = _find_parent_zone(task)
+            if parent_zone:
+                task_group = task_groups.get(parent_zone)
+
             task = GraphPythonOperator(
                 task_id=name,
                 dag=dag,
+                task_group=task_group,
                 python_callable=airflow_node_task,
                 op_kwargs=op_kwargs,
                 is_async=is_async_callable,
@@ -230,13 +368,206 @@ class AirflowEngine(BaseEngine):
                 "upstream": upstream_ids,
                 "schedule_subgraphs": schedule_subgraphs,
                 "is_async": is_async_callable,
+                "task_id": task.task_id,
             }
+
+        task_id_map = {name: task.task_id for name, task in tasks.items()}
+        for updates in ctx_updates_by_task.values():
+            for update in updates:
+                from_task = update.get("from")
+                if from_task in task_id_map:
+                    update["from_task_id"] = task_id_map[from_task]
+        for specs in incoming_specs.values():
+            for spec in specs:
+                from_task = spec.get("from")
+                if from_task in task_id_map:
+                    spec["from_task_id"] = task_id_map[from_task]
+
+        while_check_tasks: Dict[str, PythonOperator] = {}
+        while_precheck_tasks: Dict[str, PythonOperator] = {}
+        condition_task_zone: Dict[str, str] = {}
+        for zone_name, zone_task in while_zones.items():
+            # While semantics in Airflow:
+            # 1) `check_condition` runs first and skips the body if False.
+            # 2) Body tasks run when True.
+            # 3) `check_condition_tail` runs after the body, updates ctx, and
+            #    reschedules the loop (resetting tasks) while the condition stays True.
+            zone_children = _collect_zone_descendants(zone_task)
+            condition_specs = [
+                spec
+                for spec in incoming_specs.get(zone_name, [])
+                if spec.get("target_socket") == "conditions"
+            ]
+            condition_task_names = [
+                spec["from"]
+                for spec in condition_specs
+                if spec.get("from") in task_id_map
+            ]
+            for condition_name in condition_task_names:
+                condition_task_zone.setdefault(condition_name, zone_name)
+            condition_task_ids = [
+                task_id_map[name]
+                for name in condition_task_names
+                if name in task_id_map
+            ]
+            child_task_ids = [
+                task_id_map[name] for name in zone_children if name in task_id_map
+            ]
+            zone_ctx_updates: List[Dict[str, str]] = []
+            for child_name in zone_children:
+                zone_ctx_updates.extend(ctx_updates_by_task.get(child_name, []))
+            zone_literals = _collect_literals(zone_task)
+            max_iterations = zone_literals.get("max_iterations", 10000)
+            if max_iterations is None:
+                max_iterations = 10000
+
+            # Run a pre-check before the body to enforce while semantics.
+            pre_check_task = PythonOperator(
+                task_id="check_condition",
+                dag=dag,
+                task_group=task_groups.get(zone_name),
+                python_callable=airflow_while_precheck_task,
+                op_kwargs={
+                    "_ng_while_condition_specs": condition_specs,
+                },
+            )
+            while_precheck_tasks[zone_name] = pre_check_task
+            check_task = PythonOperator(
+                task_id="check_condition_tail",
+                dag=dag,
+                task_group=task_groups.get(zone_name),
+                python_callable=airflow_while_check_task,
+                # Run tail check even if pre-check skipped to release downstream tasks.
+                trigger_rule="all_done",
+                op_kwargs={
+                    "_ng_while_zone": zone_name,
+                    "_ng_while_condition_specs": condition_specs,
+                    "_ng_while_condition_task_ids": condition_task_ids,
+                    "_ng_while_child_task_ids": child_task_ids,
+                    "_ng_while_precheck_task_ids": [pre_check_task.task_id],
+                    "_ng_while_max_iterations": max_iterations,
+                    "_ng_ctx_updates": zone_ctx_updates,
+                    "_ng_runtime_context_task_id": runtime_context_task_id,
+                },
+            )
+            while_check_tasks[zone_name] = check_task
+            pre_check_task >> check_task
+            for child_name in zone_children:
+                if child_name in tasks:
+                    pre_check_task >> tasks[child_name]
+                    tasks[child_name] >> check_task
+            for condition_name in condition_task_names:
+                if condition_name in tasks:
+                    tasks[condition_name] >> pre_check_task
+            zone_children_set = set(zone_children)
+            for target_name, links in incoming.items():
+                if target_name in zone_children_set or target_name in BUILTIN_TASKS:
+                    continue
+                if target_name in condition_task_names:
+                    continue
+                if any(lk.from_task.name in zone_children_set for lk in links):
+                    if target_name in tasks:
+                        # Allow downstream to proceed when loop body is skipped.
+                        tasks[target_name].trigger_rule = "none_failed"
+                        # Gate on the tail check so downstream waits for loop to finish.
+                        check_task >> tasks[target_name]
 
         for name, task in tasks.items():
             for lk in incoming.get(name, []):
                 upstream = lk.from_task.name
                 if upstream in tasks:
                     tasks[upstream] >> task
+
+        if_check_tasks: Dict[str, PythonOperator] = {}
+        for zone_name, zone_task in if_zones.items():
+            zone_children = _collect_zone_descendants(zone_task)
+            condition_specs = [
+                spec
+                for spec in incoming_specs.get(zone_name, [])
+                if spec.get("target_socket") == "conditions"
+            ]
+            condition_task_names = [
+                spec["from"]
+                for spec in condition_specs
+                if spec.get("from") in task_id_map
+            ]
+            for condition_name in condition_task_names:
+                condition_task_zone.setdefault(condition_name, zone_name)
+            pre_check_task = PythonOperator(
+                task_id="check_condition",
+                dag=dag,
+                task_group=task_groups.get(zone_name),
+                python_callable=airflow_if_precheck_task,
+                op_kwargs={
+                    "_ng_if_condition_specs": condition_specs,
+                },
+            )
+            if_check_tasks[zone_name] = pre_check_task
+            for child_name in zone_children:
+                if child_name in tasks:
+                    pre_check_task >> tasks[child_name]
+            for condition_name in condition_task_names:
+                if condition_name in tasks:
+                    tasks[condition_name] >> pre_check_task
+            zone_children_set = set(zone_children)
+            for target_name, links in incoming.items():
+                if target_name in zone_children_set or target_name in BUILTIN_TASKS:
+                    continue
+                if target_name in condition_task_names:
+                    continue
+                if any(lk.from_task.name in zone_children_set for lk in links):
+                    if target_name in tasks:
+                        # Allow downstream to proceed when if-body is skipped.
+                        tasks[target_name].trigger_rule = "none_failed"
+
+        for zone_name, zone_task in while_zones.items():
+            nested_zones = _collect_zone_descendant_zones(zone_task)
+            nested_control_ids: List[str] = []
+            for nested_name in nested_zones:
+                precheck_task = if_check_tasks.get(nested_name)
+                if precheck_task is not None:
+                    nested_control_ids.append(precheck_task.task_id)
+                nested_precheck = while_precheck_tasks.get(nested_name)
+                if nested_precheck is not None:
+                    nested_control_ids.append(nested_precheck.task_id)
+                nested_tail = while_check_tasks.get(nested_name)
+                if nested_tail is not None:
+                    nested_control_ids.append(nested_tail.task_id)
+            if nested_control_ids:
+                # Ensure nested zone control tasks are cleared each iteration.
+                while_check_tasks[zone_name].op_kwargs[
+                    "_ng_while_nested_control_task_ids"
+                ] = nested_control_ids
+
+        for ctx_key, readers in ctx_readers_by_key.items():
+            writers = ctx_writers_by_key.get(ctx_key, [])
+            for reader_name in readers:
+                if reader_name not in tasks:
+                    continue
+                reader_zone = condition_task_zone.get(reader_name) or _find_parent_zone(
+                    ng.tasks[reader_name]
+                )
+                for writer_name in writers:
+                    if writer_name == reader_name:
+                        continue
+                    writer_zone = _find_parent_zone(ng.tasks[writer_name])
+                    if writer_zone is not None and writer_zone == reader_zone:
+                        continue
+                    if reader_zone is None and writer_zone in while_check_tasks:
+                        # ctx read outside the loop waits for tail check to publish updates.
+                        while_check_tasks[writer_zone] >> tasks[reader_name]
+                        continue
+                    if writer_zone is not None and writer_zone != reader_zone:
+                        if _is_within_zone(ng.tasks[reader_name], writer_zone):
+                            # Avoid cycles for nested zones within the same while loop.
+                            continue
+                        check_task = while_check_tasks.get(writer_zone)
+                        if check_task is not None:
+                            # Cross-zone ctx reads also wait for the writer's tail check.
+                            check_task >> tasks[reader_name]
+                            continue
+                    if writer_name in tasks:
+                        tasks[writer_name] >> tasks[reader_name]
 
         return _CompiledDag(
             dag=dag,
@@ -269,10 +600,14 @@ class AirflowEngine(BaseEngine):
             },
         )
 
+        task_id_map = {
+            name: config.get("task_id", name)
+            for name, config in compiled.task_configs.items()
+        }
         node_task_ids = [
             name
             for name in compiled.order
-            if name not in BUILTIN_TASKS and name in dag.task_dict
+            if name not in BUILTIN_TASKS and name in task_id_map
         ]
 
         finalize_task = PythonOperator(
@@ -282,16 +617,23 @@ class AirflowEngine(BaseEngine):
             op_kwargs={
                 "_ng_context_task_id": context_task_id,
                 "_ng_task_task_ids": node_task_ids,
+                "_ng_task_id_map": task_id_map,
                 "_ng_profile_name": self._profile_name,
                 "_ng_incoming": compiled.incoming_specs,
             },
             trigger_rule="all_done",
         )
 
-        for task_id in node_task_ids:
+        for task_name in node_task_ids:
+            task_id = task_id_map.get(task_name, task_name)
             task = dag.task_dict[task_id]
             if not task.upstream_task_ids:
                 init_task >> task
+            if not task.downstream_task_ids:
+                task >> finalize_task
+        for task in dag.task_dict.values():
+            if task.task_id in (context_task_id, finalize_task_id):
+                continue
             if not task.downstream_task_ids:
                 task >> finalize_task
         if not finalize_task.upstream_task_ids:

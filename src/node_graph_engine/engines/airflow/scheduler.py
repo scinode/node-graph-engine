@@ -414,6 +414,4 @@ def _poll_for_scheduled_result(
 
         time.sleep(min(1.0, poll_interval))
 
-    raise RuntimeError(
-        f"Airflow scheduler did not produce a result for DAG '{dag_id}'"
-    )
+    raise RuntimeError(f"Airflow scheduler did not produce a result for DAG '{dag_id}'")

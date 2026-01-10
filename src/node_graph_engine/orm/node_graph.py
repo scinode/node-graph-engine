@@ -1,12 +1,11 @@
 """Module with `Node` sub class for work processes."""
 
-from typing import Optional, Tuple
-import logging
+from typing import Tuple
 from aiida.common.lang import classproperty
 
 from aiida.orm.nodes.process.workflow import WorkflowNode
 
-__all__ = ('NodeGraphNode',)
+__all__ = ("NodeGraphNode",)
 
 
 def make_dict_property(attribute_key: str, default=None):
@@ -46,11 +45,11 @@ def set_item_in_dict(base, attribute_key: str, item_key: str, value):
 class NodeGraphNode(WorkflowNode):
     """ORM class for all nodes representing the execution of a NodeGraph."""
 
-    TASK_EXECUTORS_KEY = 'task_executors'
-    TASK_INPUTS_KEY = 'task_inputs'
-    NODEGRAPH_DATA_KEY = 'nodegraph_data'
-    NODEGRAPH_DATA_SHORT_KEY = 'nodegraph_data_short'
-    NODEGRAPH_ERROR_HANDLERS_KEY = 'nodegraph_error_handlers'
+    TASK_EXECUTORS_KEY = "task_executors"
+    TASK_INPUTS_KEY = "task_inputs"
+    NODEGRAPH_DATA_KEY = "nodegraph_data"
+    NODEGRAPH_DATA_SHORT_KEY = "nodegraph_data_short"
+    NODEGRAPH_ERROR_HANDLERS_KEY = "nodegraph_error_handlers"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -70,6 +69,6 @@ class NodeGraphNode(WorkflowNode):
     nodegraph_data = make_dict_property(NODEGRAPH_DATA_KEY, default=None)
     task_inputs = make_dict_property(TASK_INPUTS_KEY, default=None)
     nodegraph_data_short = make_dict_property(NODEGRAPH_DATA_SHORT_KEY, default=None)
-    nodegraph_error_handlers = make_dict_property(NODEGRAPH_ERROR_HANDLERS_KEY, default=None)
-
-    
+    nodegraph_error_handlers = make_dict_property(
+        NODEGRAPH_ERROR_HANDLERS_KEY, default=None
+    )

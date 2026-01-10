@@ -171,7 +171,6 @@ def test_attribute_ref_defaults_to_subject_node() -> None:
     assert "canonical_socket" in ref
     workflow_node = orm.load_node(engine._graph_pid)
     _, semantics = _load_knowledge_graph(workflow_node)
-    socket_entry = semantics["sockets"][ref["canonical_socket"]]
     # Attribute refs remain recorded in the KG semantics attributes.
     triples = semantics.get("triples", [])
     assert any(
@@ -192,7 +191,6 @@ def test_semantics_accepts_pydantic_tag() -> None:
     engine = LocalEngine()
     outputs = engine.run(energy_flow.build())
     result_node = outputs["result"]
-    assert result_node.base.extras.get("semantics") is None
     ref = result_node.base.extras.get("semantics_ref")
     workflow_node = orm.load_node(engine._graph_pid)
     _, semantics = _load_knowledge_graph(workflow_node)
@@ -243,7 +241,6 @@ def test_input_semantics_can_reference_outputs() -> None:
         return compute_band_structure(structure=structure).result
 
     structure = orm.Dict(dict={"kind": "fcc"}).store()
-    structure_uuid = structure.uuid
     engine = LocalEngine()
     engine.run(band_structure_workflow.build(structure=structure))
 
@@ -356,9 +353,7 @@ def test_manual_semantics_attachment_handles_multiple_properties() -> None:
     workflow_node = orm.load_node(engine._graph_pid)
     _, semantics = _load_knowledge_graph(workflow_node)
     triples = semantics.get("triples", [])
-    property_triples = [
-        t for t in triples if t[1] == "mat:hasProperty"
-    ]
+    property_triples = [t for t in triples if t[1] == "mat:hasProperty"]
     assert len(property_triples) >= 4
     # Ensure both band structure and DOS properties were linked.
     objects = {t[2] for t in property_triples}

@@ -329,6 +329,8 @@ def _scan_links_topology(
         src = lk.from_task.name
         dst = lk.to_task.name
         incoming[dst].append(lk)
+        if src == "graph_ctx" or dst == "graph_ctx":
+            continue
         outgoing[src].append((dst, lk.to_socket._scoped_name))
         indeg[dst] = indeg.get(dst, 0) + 1
         indeg.setdefault(src, 0)
@@ -466,8 +468,11 @@ def setup_inputs(task: orm.ProcessNode, inputs: dict) -> None:
         elif isinstance(task, orm.WorkflowNode):
             task.base.links.add_incoming(data, LinkType.INPUT_WORK, name)
 
+
 def UnavailableExecutor(*args, **kwargs):
-    raise RuntimeError('This executor was defined dynamically and is not available from the database snapshot.')
+    raise RuntimeError(
+        "This executor was defined dynamically and is not available from the database snapshot."
+    )
 
 
 def clean_pickled_task_executor(tdata: Dict[str, Any]) -> None:
@@ -475,18 +480,22 @@ def clean_pickled_task_executor(tdata: Dict[str, Any]) -> None:
     from node_graph.executor import RuntimeExecutor
 
     # spec
-    if 'spec' in tdata:
-        executor = tdata['spec'].get('executor', {})
-        if executor.get('mode', '') == 'pickled_callable':
-            tdata['spec']['executor'] = RuntimeExecutor.from_callable(UnavailableExecutor).to_dict()
-        if executor.get('mode', '') == 'graph':
-            ngdata = executor['graph_data']
-            for task in ngdata['tasks'].values():
+    if "spec" in tdata:
+        executor = tdata["spec"].get("executor", {})
+        if executor.get("mode", "") == "pickled_callable":
+            tdata["spec"]["executor"] = RuntimeExecutor.from_callable(
+                UnavailableExecutor
+            ).to_dict()
+        if executor.get("mode", "") == "graph":
+            ngdata = executor["graph_data"]
+            for task in ngdata["tasks"].values():
                 clean_pickled_task_executor(task)
     # error handler
-    for name, handler in tdata.get('error_handlers', {}).items():
-        if handler.get('mode', '') == 'pickled_callable':
-            tdata['error_handlers'][name] = RuntimeExecutor.from_callable(UnavailableExecutor).to_dict()
+    for name, handler in tdata.get("error_handlers", {}).items():
+        if handler.get("mode", "") == "pickled_callable":
+            tdata["error_handlers"][name] = RuntimeExecutor.from_callable(
+                UnavailableExecutor
+            ).to_dict()
 
 
 def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -> None:
@@ -495,12 +504,12 @@ def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -
 
     ngdata = ng.to_dict(should_serialize=True)
     task_inputs = {}
-    for name, task in ngdata['tasks'].items():
+    for name, task in ngdata["tasks"].items():
         # clean pickled executor before save to database
-        task_inputs[name] = task.pop('inputs', {})
+        task_inputs[name] = task.pop("inputs", {})
         clean_pickled_task_executor(task)
     node.nodegraph_data = ngdata
-    graph_inputs = task_inputs.pop('graph_inputs', {})
+    graph_inputs = task_inputs.pop("graph_inputs", {})
     serialize_kwargs = {
         "python_data": graph_inputs,
         "port_schema": ng.spec.inputs,
@@ -509,11 +518,10 @@ def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -
         serialize_kwargs["user"] = user
     graph_inputs = serialize_ports(**serialize_kwargs)
     setup_inputs(node, graph_inputs)
-    task_inputs['graph_inputs'] = graph_inputs
+    task_inputs["graph_inputs"] = graph_inputs
     node.task_inputs = serialize(task_inputs)
     node.set_checkpoint(serialize(ngdata))
     return graph_inputs
-
 
 
 def load_nodegraph_data(node: Union[int, orm.Node]) -> Optional[Dict[str, Any]]:
@@ -524,18 +532,17 @@ def load_nodegraph_data(node: Union[int, orm.Node]) -> Optional[Dict[str, Any]]:
     from .serialize import deserialize_safe
     import yaml
 
-
     if isinstance(node, int):
         node = load_node(node)
     ngdata = node.base.attributes.get("nodegraph_data", None)
     try:
-        task_inputs = deserialize_safe(node.task_inputs or '')
+        task_inputs = deserialize_safe(node.task_inputs or "")
     except (yaml.constructor.ConstructorError, yaml.YAMLError):
         print(
-            'Info: could not deserialize inputs.The nodegraph is still loaded and you can inspect tasks and outputs. '
+            "Info: could not deserialize inputs.The nodegraph is still loaded and you can inspect tasks and outputs. "
         )
         task_inputs = {}
 
     for name, data in task_inputs.items():
-        ngdata['tasks'][name]['inputs'] = data
+        ngdata["tasks"][name]["inputs"] = data
     return ngdata

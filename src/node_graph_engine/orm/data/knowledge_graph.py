@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import json
 import hashlib
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from aiida import orm
 from aiida.common.links import LinkType
 from aiida.orm import QueryBuilder
-from node_graph.knowledge.graph import KnowledgeGraph
+from node_graph.knowledge import KnowledgeGraph
 
 
 class KnowledgeGraphData(orm.Dict):
     """Light-weight AiiDA container for workflow or node-level knowledge graphs."""
-
 
     @property
     def payload(self) -> Dict[str, Any]:  # pragma: no cover - thin wrapper
@@ -99,7 +98,9 @@ class KnowledgeGraphData(orm.Dict):
             if key == "has_key":
                 if isinstance(val, str) and val not in data:
                     return False
-                if isinstance(val, (list, tuple, set)) and any(v not in data for v in val):
+                if isinstance(val, (list, tuple, set)) and any(
+                    v not in data for v in val
+                ):
                     return False
                 continue
             if val is None:
@@ -123,9 +124,7 @@ class KnowledgeGraphData(orm.Dict):
         extras: Optional[Dict[str, Any]] = None,
     ) -> Tuple["KnowledgeGraphData", bool]:
         kg_hash = payload.get("hash") or _hash_semantics_payload(payload)
-        filters: Dict[str, Any] = {
-            "attributes.hash": kg_hash
-        }
+        filters: Dict[str, Any] = {"attributes.hash": kg_hash}
 
         existing = cls._maybe_existing(filters)
         if existing:
@@ -165,12 +164,14 @@ class KnowledgeGraphData(orm.Dict):
         node.store()
         return node, True
 
+
 def _hash_semantics_payload(payload: Dict[str, Any]) -> str:
     """Return a stable hash for a semantics/knowledge-graph payload."""
 
     semantics = payload.get("semantics") or payload
     serialized = json.dumps(semantics, sort_keys=True, default=str)
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
 
 def build_workflow_knowledge_payload(
     *,
@@ -182,7 +183,9 @@ def build_workflow_knowledge_payload(
         definition = metadata["definition"]
     else:
         definition = metadata
-    identifier = definition.get("task_identifier") if isinstance(definition, dict) else None
+    identifier = (
+        definition.get("task_identifier") if isinstance(definition, dict) else None
+    )
     if identifier is None:
         identifier = getattr(graph, "name", None)
 
@@ -199,12 +202,24 @@ def build_workflow_knowledge_payload(
         "workflow": {
             "name": getattr(graph, "name", None),
             "identifier": identifier,
-            "module": definition.get("module") if isinstance(definition, dict) else None,
-            "qualname": definition.get("qualname") if isinstance(definition, dict) else None,
-            "callable_path": definition.get("callable_path") if isinstance(definition, dict) else None,
-            "file_path": definition.get("file_path") if isinstance(definition, dict) else None,
-            "package": definition.get("package") if isinstance(definition, dict) else None,
-            "package_version": definition.get("package_version") if isinstance(definition, dict) else None,
+            "module": definition.get("module")
+            if isinstance(definition, dict)
+            else None,
+            "qualname": definition.get("qualname")
+            if isinstance(definition, dict)
+            else None,
+            "callable_path": definition.get("callable_path")
+            if isinstance(definition, dict)
+            else None,
+            "file_path": definition.get("file_path")
+            if isinstance(definition, dict)
+            else None,
+            "package": definition.get("package")
+            if isinstance(definition, dict)
+            else None,
+            "package_version": definition.get("package_version")
+            if isinstance(definition, dict)
+            else None,
         },
         "engine_kind": engine_kind,
         "semantics": semantics_payload,
@@ -224,7 +239,6 @@ def persist_workflow_knowledge_graph(
     if payload is None:
         print("No semantics found; skipping knowledge graph creation.")
         return None
-    wf_meta = payload.get("workflow", {})
     knowledge, _ = KnowledgeGraphData.get_or_create_workflow(
         payload=payload,
         extras={"engine_kind": engine_kind},
