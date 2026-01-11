@@ -1,0 +1,70 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      AIIDA_PROFILE: default
+      AIIDA_EMAIL: aiida@scinode.local
+      AIIDA_FIRST_NAME: Sci
+      AIIDA_LAST_NAME: Node
+      AIIDA_INSTITUTION: SciNode
+      AIIDA_DB_HOST: postgres
+      AIIDA_DB_PORT: 5432
+      AIIDA_DB_NAME: aiida
+      AIIDA_DB_USER: aiida
+      AIIDA_DB_PASSWORD: aiida
+      AIIDA_BROKER_HOST: rabbitmq
+      AIIDA_BROKER_PORT: 5672
+      AIIDA_BROKER_USER: aiida
+      AIIDA_BROKER_PASSWORD: aiida
+      NODE_GRAPH_NEO4J_URI: bolt://neo4j:7687
+      NODE_GRAPH_NEO4J_USER: neo4j
+      NODE_GRAPH_NEO4J_PASSWORD: neo4j_password
+      AIIDA_START_DAEMON: "0"
+    volumes:
+      - aiida-data:/var/lib/aiida
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    command: ["bash", "-lc", "sleep infinity"]
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aiida
+      POSTGRES_USER: aiida
+      POSTGRES_PASSWORD: aiida
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiida -d aiida"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.22
+    environment:
+      NEO4J_AUTH: neo4j/neo4j_password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p neo4j_password 'RETURN 1' >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+volumes:
+  aiida-data:
+  postgres-data:
+  neo4j-data:

@@ -27,6 +27,18 @@ Installation
    be available on the printed URL (default http://127.0.0.1:4200).
    Or, you can set up the `Prefect Cloud <https://docs.prefect.io/v3/how-to-guides/cloud/connect-to-cloud>`_.
 
+Docker quickstart
+-----------------
+
+Run the Prefect server in Docker and point your client at it:
+
+.. code-block:: console
+
+   docker compose -f tests_integration/docker-compose.yml up -d prefect
+   export PREFECT_API_URL=http://localhost:4200/api
+
+You still need the Prefect extra installed locally so the engine can build flows.
+
 
 Example
 -------

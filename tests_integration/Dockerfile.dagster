@@ -1,0 +1,15 @@
+FROM python:3.10-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DAGSTER_HOME=/opt/dagster
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip && \
+    pip install "dagster==1.7.15" "dagster-webserver==1.7.15"
+
+WORKDIR /opt/project

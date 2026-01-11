@@ -108,3 +108,8 @@ engines = [
 [project.entry-points."node_graph.cli"]
 "knowledge-graph" = "node_graph_engine.cli:knowledge_graph"
 "kg" = "node_graph_engine.cli:knowledge_graph"
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require external orchestration services",
+]

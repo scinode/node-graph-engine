@@ -26,6 +26,18 @@ Installation
 
       temporal server start-dev
 
+Docker quickstart
+-----------------
+
+Run the Temporal dev server in Docker and connect to it from the engine:
+
+.. code-block:: console
+
+   docker compose -f tests_integration/docker-compose.yml up -d temporal
+   export TEMPORAL_ADDRESS=localhost:7233
+
+You still need the Temporal extra installed locally to run workflows and activities.
+
 Example
 -------
 

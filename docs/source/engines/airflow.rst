@@ -34,6 +34,20 @@ Installation
    It prints the generated username and password once the services are ready.
    Access the Airflow UI at ``http://localhost:8080``.
 
+Docker quickstart
+-----------------
+
+If you prefer running the Airflow webserver/scheduler in Docker, use the
+compose file shipped with the repository:
+
+.. code-block:: console
+
+   docker compose -f tests_integration/docker-compose.yml up -d airflow
+   export AIRFLOW_HOME=$PWD/tests_integration/.airflow
+
+This still requires the Airflow extra installed in your Python environment so the
+engine can build and submit DAGs.
+
 Example
 -------
 
