@@ -12,6 +12,7 @@ mirrors the quick-start workflow for the respective engine.
    dask
    airflow
    prefect
+   temporal
    dagster
    celery
    parsl

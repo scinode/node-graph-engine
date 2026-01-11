@@ -67,6 +67,9 @@ dask = [
 prefect = [
     "prefect~=3.4",
 ]
+temporal = [
+    "temporalio~=1.6",
+]
 parsl = [
     "parsl==2025.10.6",
 ]
@@ -87,6 +90,7 @@ dagster = [
 ]
 engines = [
     "prefect~=3.4",
+    "temporalio~=1.6",
     "parsl==2025.10.6",
     "executorlib~=1.7",
     "redun~=0.32",

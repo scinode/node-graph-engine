@@ -15,6 +15,7 @@ node-graph Engine ships adaptors for multiple backends. Browse the dedicated
 * :ref:`Dask <engines-dask>`
 * :ref:`Airflow <engines-airflow>`
 * :ref:`Prefect <engines-prefect>`
+* :ref:`Temporal <engines-temporal>`
 * :ref:`Celery <engines-celery>`
 * :ref:`Dagster <engines-dagster>`
 * :ref:`Parsl <engines-parsl>`
