@@ -33,7 +33,7 @@ from node_graph_engine.core.utils import (
     update_nested_dict_with_special_keys,
 )
 from node_graph_engine.neo4j.knowledge_graph import persist_workflow_knowledge_graph
-from node_graph_engine.core.task import TaskMeta
+from node_graph_engine.core.task_execution import ensure_meta
 
 from .async_request import AsyncNodeExecutionRequest
 from .common import IncomingSpec
@@ -278,16 +278,6 @@ def _build_runtime_kwargs(
     return kwargs
 
 
-def _ensure_meta(meta: Any) -> TaskMeta:
-    if isinstance(meta, TaskMeta):
-        return meta
-    if isinstance(meta, dict):
-        return TaskMeta(**meta)
-    if hasattr(meta, "as_dict"):
-        return TaskMeta(**meta.as_dict())
-    raise TypeError(f"Unsupported metadata payload: {meta!r}")
-
-
 def _execute_node(
     *,
     parent_pid: Optional[str],
@@ -308,7 +298,7 @@ def _execute_node(
     task_type: Optional[str] = None,
     node_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    meta_obj = _ensure_meta(meta)
+    meta_obj = ensure_meta(meta)
     runtime_inputs = dict(literals)
     runtime_inputs.update(
         _build_runtime_kwargs(
@@ -468,7 +458,7 @@ def airflow_node_task(
         )
         if runtime_context is None:
             runtime_context = {"values": dict(base_values)}
-        meta = _ensure_meta(context["_ng_meta"])
+        meta = ensure_meta(context["_ng_meta"])
         _apply_ctx_updates(
             runtime_context=runtime_context,
             ctx_updates=ctx_updates,
