@@ -128,7 +128,7 @@ def _resolve_from_payload(payload: Any, socket: str) -> Any:
     return get_nested_dict(payload, socket, default=None)
 
 
-def _collect_literals(task, raw=False) -> Dict[str, Any]:
+def _collect_literals(task, unwrap=False) -> Dict[str, Any]:
     """
     Recursively collect literal values from the task's input namespace, excluding
     values that are overridden by links at schedule time.
@@ -136,7 +136,7 @@ def _collect_literals(task, raw=False) -> Dict[str, Any]:
     from node_graph.utils import tag_socket_value
 
     tag_socket_value(task.inputs, only_uuid=True)
-    return task.inputs._collect_values(raw=raw)
+    return task.inputs._collect_values(unwrap=unwrap)
 
 
 def _is_encoded_tagged(value: Any) -> bool:

@@ -28,7 +28,7 @@ dependencies = [
     "numpy",
     "scipy",
     "cloudpickle",
-    "node-graph~=0.5.2",
+    "node-graph~=0.5.4",
     "node-graph-widget",
     "wrapt",
     "typing_extensions>=4.7; python_version < '3.11'",
