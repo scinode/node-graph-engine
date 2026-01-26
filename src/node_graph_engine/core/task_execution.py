@@ -17,6 +17,7 @@ from aiida_pythonjob.data.deserializer import deserialize_to_raw_python_data
 from aiida_pythonjob.data.serializer import all_serializers
 from aiida_pythonjob.parsers.utils import parse_outputs
 from aiida_pythonjob.utils import serialize_ports
+from node_graph_engine.serialization import resolve_tagged_values
 from node_graph import Graph
 from node_graph.executor import RuntimeExecutor
 from node_graph.socket_spec import SocketSpec
@@ -237,6 +238,7 @@ class TaskExecutionCoordinator:
         if not meta_obj.is_graph and request.node_inputs is not None:
             try:
                 inputs_spec = SocketSpec.from_dict(request.node_inputs)
+                resolve_tagged_values(inputs)
                 inputs = serialize_ports(
                     python_data=inputs,
                     port_schema=inputs_spec,
