@@ -503,9 +503,22 @@ def clean_pickled_task_executor(tdata: Dict[str, Any]) -> None:
 
 def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -> None:
     from aiida.orm.utils.serialize import serialize
-    from aiida_pythonjob.utils import serialize_ports
+    from node_graph.serializer import NullSerializationAdapter
+    from node_graph_engine.serialization import AiidaSerializationAdapter
 
+    adapter = getattr(ng, "serialization", None)
+    use_temp_adapter = (
+        adapter is None
+        or isinstance(adapter, NullSerializationAdapter)
+        or not hasattr(adapter, "serialize")
+    )
+    if use_temp_adapter:
+        adapter = AiidaSerializationAdapter(user=user)
+        original_adapter = getattr(ng, "serialization", None)
+        ng.serialization = adapter
     ngdata = ng.to_dict(should_serialize=True)
+    if use_temp_adapter:
+        ng.serialization = original_adapter
     task_inputs = {}
     for name, task in ngdata["tasks"].items():
         # clean pickled executor before save to database
@@ -513,13 +526,6 @@ def save_nodegraph_data(node: Union[int, orm.Node], ng: Graph, user: orm.User) -
         clean_pickled_task_executor(task)
     node.nodegraph_data = ngdata
     graph_inputs = task_inputs.pop("graph_inputs", {})
-    serialize_kwargs = {
-        "python_data": graph_inputs,
-        "port_schema": ng.spec.inputs,
-    }
-    if user is not None:
-        serialize_kwargs["user"] = user
-    graph_inputs = serialize_ports(**serialize_kwargs)
     setup_inputs(node, graph_inputs)
     task_inputs["graph_inputs"] = graph_inputs
     node.task_inputs = serialize(task_inputs)
