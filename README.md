@@ -73,6 +73,53 @@ pip install aiida-core
 verdi presto
 ```
 
+## Docker-backed local services (integration testing)
+
+Some engines require a running service (Airflow, Prefect, Dagster, Temporal). We
+provide a docker-compose file that spins up each service so you can test the engines
+locally.
+
+From the repository root:
+
+```console
+cd node-graph-engine
+```
+
+Start only the service you need (integration profile):
+
+```console
+# Airflow
+docker compose -f docker-compose.yml --profile integration up -d airflow
+
+# Prefect
+docker compose -f docker-compose.yml --profile integration up -d prefect
+
+# Dagster
+docker compose -f docker-compose.yml --profile integration up -d dagster
+
+# Temporal (includes postgres)
+docker compose -f docker-compose.yml --profile integration up -d temporal
+```
+
+Then set the matching environment variables before running your engine code:
+
+```console
+# Airflow
+export AIRFLOW_HOME=$PWD/tests_integration/.airflow
+
+# Prefect
+export PREFECT_API_URL=http://localhost:4200/api
+
+# Dagster
+export DAGSTER_HOME=$PWD/tests_integration/.dagster
+
+# Temporal
+export TEMPORAL_ADDRESS=localhost:7233
+```
+
+These containers are for development/testing; you still need the Python extras for
+each engine installed in your local environment (e.g. ``node_graph_engine[airflow]``).
+
 
 ## Documentation
 Read the full documentation at https://node-graph-engine.readthedocs.io/en/latest/

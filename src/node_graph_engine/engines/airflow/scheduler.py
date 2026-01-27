@@ -194,7 +194,10 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> Tuple[DAG, bool]
         # Airflow 3 disallows ORM access from execution-time contexts; skip persistence
         # so we can still trigger runs as long as the scheduler discovers the DAG file.
         message = str(exc)
-        if "Direct database access via the ORM is not allowed" in message:
+        if (
+            "Direct database access via the ORM is not allowed" in message
+            or "no such table: dag" in message
+        ):
             logging.getLogger(__name__).warning(
                 "Skipping DAG persistence for '%s' due to Airflow execution-time DB "
                 "restrictions; relying on scheduler DAG discovery. Error: %s",
@@ -208,6 +211,30 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> Tuple[DAG, bool]
             raise
 
     return dag_obj, persisted
+
+
+def _metadata_db_ready() -> bool:
+    """Return True if the Airflow metadata DB is initialized and reachable."""
+
+    try:
+        from airflow.utils.session import create_session
+        from sqlalchemy import text
+    except Exception:
+        return False
+
+    try:
+        with create_session() as session:
+            session.execute(text("SELECT 1 FROM dag LIMIT 1"))
+        return True
+    except Exception as exc:
+        message = str(exc)
+        if (
+            "Direct database access via the ORM is not allowed" in message
+            or "no such table" in message
+            or "does not exist" in message
+        ):
+            return False
+        return False
 
 
 def _prepare_run_artifacts(
@@ -353,7 +380,8 @@ def _poll_for_result(
     from pathlib import Path
 
     result_path = Path(result_path)
-    deadline = time.monotonic() + max(poll_interval * 10, 3600)
+    timeout = float(os.environ.get("NG_AIRFLOW_RESULT_TIMEOUT", 3600))
+    deadline = time.monotonic() + max(poll_interval * 10, timeout)
 
     while time.monotonic() < deadline:
         if result_path.exists():
@@ -387,7 +415,8 @@ def _poll_for_scheduled_result(
     from pathlib import Path
 
     run_root = Path(run_root) / dag_id
-    deadline = time.monotonic() + max(poll_interval * 10, 3600)
+    timeout = float(os.environ.get("NG_AIRFLOW_RESULT_TIMEOUT", 3600))
+    deadline = time.monotonic() + max(poll_interval * 10, timeout)
 
     while time.monotonic() < deadline:
         if run_root.exists():

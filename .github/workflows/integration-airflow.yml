@@ -1,0 +1,85 @@
+name: integration-airflow
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * 0"
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      NG_INTEGRATION: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . --no-deps
+          pip install "aiida-core~=2.7" "aiida-pythonjob~=0.5.1" "pytest~=7.0" "pytest-cov~=2.7"
+          pip install "pytest-timeout~=2.3"
+          pip install "apache-airflow~=3.1"
+
+      - name: Set up AiiDA profile
+        run: verdi presto
+
+      - name: Start services
+        run: |
+          export AIRFLOW_HOME="/opt/airflow"
+          export AIRFLOW_UID="$(id -u)"
+          export AIRFLOW_GID="0"
+          sudo mkdir -p "$AIRFLOW_HOME/dags"
+          sudo chmod -R 777 "$AIRFLOW_HOME"
+          docker compose -f docker-compose.yml --profile integration up -d airflow
+
+      - name: Wait for services
+        run: |
+          ready=0
+          for _ in {1..60}; do
+            curl -fsS http://localhost:8080/api/v2/monitor/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://localhost:8080/api/v2/monitor/health >/dev/null 2>&1 && ready=1 || true
+          if [ "$ready" -ne 1 ]; then
+            echo "Airflow did not become ready in time."
+            docker compose -f tests_integration/docker-compose.yml logs airflow || true
+            exit 1
+          fi
+
+      - name: Install Airflow container deps
+        run: |
+          docker exec node-graph-engine-airflow-1 pip install -e /opt/project --no-deps
+          docker exec node-graph-engine-airflow-1 pip install "aiida-core~=2.7" "aiida-pythonjob~=0.5.1"
+
+      - name: Run integration tests
+        run: |
+          export NG_AIRFLOW_INTEGRATION=1
+          export AIRFLOW_HOME="/opt/airflow"
+          export AIRFLOW__CORE__DAGS_FOLDER="$AIRFLOW_HOME/dags"
+          export NG_AIRFLOW_RESULT_TIMEOUT=100
+          pytest tests_integration/test_engine_airflow_integration.py -s -vv --maxfail=1 --timeout=100
+
+      - name: Dump Airflow state
+        if: failure()
+        run: |
+          docker exec node-graph-engine-airflow-1 airflow dags list || true
+          docker exec node-graph-engine-airflow-1 airflow dags list-runs --dag-id ng_integration_airflow || true
+          docker exec node-graph-engine-airflow-1 airflow tasks list --dag-id ng_integration_airflow || true
+          docker exec node-graph-engine-airflow-1 ls -l /opt/airflow/dags || true
+          docker compose -f docker-compose.yml --profile integration logs airflow || true
+          docker exec node-graph-engine-airflow-1 airflow dags list-import-errors
+
+      - name: Tear down services
+        if: always()
+        run: docker compose -f docker-compose.yml --profile integration down -v

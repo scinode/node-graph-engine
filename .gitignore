@@ -51,6 +51,13 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# Integration test service data
+tests_integration/.airflow/
+tests_integration/.dagster/
+tests_integration/.prefect/
+tests_integration/.temporal/
+tests/integration/.airflow/
+
 # Translations
 *.mo
 *.pot

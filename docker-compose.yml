@@ -1,0 +1,151 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      AIIDA_PROFILE: default
+      AIIDA_EMAIL: aiida@scinode.local
+      AIIDA_FIRST_NAME: Sci
+      AIIDA_LAST_NAME: Node
+      AIIDA_INSTITUTION: SciNode
+      AIIDA_DB_HOST: postgres
+      AIIDA_DB_PORT: 5432
+      AIIDA_DB_NAME: aiida
+      AIIDA_DB_USER: aiida
+      AIIDA_DB_PASSWORD: aiida
+      AIIDA_BROKER_HOST: rabbitmq
+      AIIDA_BROKER_PORT: 5672
+      AIIDA_BROKER_USER: aiida
+      AIIDA_BROKER_PASSWORD: aiida
+      NODE_GRAPH_NEO4J_URI: bolt://neo4j:7687
+      NODE_GRAPH_NEO4J_USER: neo4j
+      NODE_GRAPH_NEO4J_PASSWORD: neo4j_password
+      AIIDA_START_DAEMON: "0"
+    volumes:
+      - aiida-data:/var/lib/aiida
+    depends_on:
+      postgres:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    command: ["bash", "-lc", "sleep infinity"]
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: aiida
+      POSTGRES_USER: aiida
+      POSTGRES_PASSWORD: aiida
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiida -d aiida"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  neo4j:
+    image: neo4j:5.22
+    environment:
+      NEO4J_AUTH: neo4j/neo4j_password
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "cypher-shell -u neo4j -p neo4j_password 'RETURN 1' >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  prefect:
+    image: prefecthq/prefect:3-latest
+    command: prefect server start --host 0.0.0.0 --port 4200
+    ports:
+      - "4200:4200"
+    volumes:
+      - ./tests_integration/.prefect:/root/.prefect
+    profiles: ["integration"]
+
+  temporal-postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
+    volumes:
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    profiles: ["integration"]
+
+  temporal:
+    image: temporalio/auto-setup:1.25.0
+    depends_on:
+      temporal-postgres:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=temporal
+      - POSTGRES_PWD=temporal
+      - POSTGRES_DB=temporal
+      - POSTGRES_SEEDS=temporal-postgres
+    ports:
+      - "7233:7233"
+    profiles: ["integration"]
+
+  airflow:
+    image: apache/airflow:3.1.0
+    user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-0}"
+    environment:
+      AIRFLOW__CORE__EXECUTOR: SequentialExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "5"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "5"
+    volumes:
+      - ${AIRFLOW_HOME:-./tests_integration/.airflow}:/opt/airflow
+      - .:/opt/project
+    ports:
+      - "8080:8080"
+    command: airflow standalone
+    profiles: ["integration"]
+
+  dagster:
+    build:
+      context: ./tests_integration
+      dockerfile: Dockerfile.dagster
+    environment:
+      DAGSTER_HOME: /opt/dagster
+    volumes:
+      - ./tests_integration/.dagster:/opt/dagster
+      - .:/opt/project
+    ports:
+      - "3000:3000"
+    command:
+      [
+        "dagster-webserver",
+        "-h",
+        "0.0.0.0",
+        "-p",
+        "3000",
+        "-w",
+        "/opt/project/tests_integration/dagster_workspace.yaml",
+      ]
+    profiles: ["integration"]
+
+volumes:
+  aiida-data:
+  postgres-data:
+  neo4j-data:
+  temporal-postgres-data:
