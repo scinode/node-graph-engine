@@ -46,7 +46,9 @@ jobs:
           nc -z localhost 7233 >/dev/null 2>&1 && ready=1 || true
           if [ "$ready" -ne 1 ]; then
             echo "Temporal did not become ready in time."
-            docker compose -f tests_integration/docker-compose.yml logs temporal || true
+            docker compose -f docker-compose.yml --profile integration ps || true
+            docker compose -f docker-compose.yml --profile integration logs temporal || true
+            docker compose -f docker-compose.yml --profile integration logs temporal-postgres || true
             exit 1
           fi
 

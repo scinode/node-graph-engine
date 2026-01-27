@@ -34,7 +34,7 @@ def test_temporal_engine_integration(nested_graph) -> None:
         ) from last_exc
 
     async def _run():
-        timeout = float(os.environ.get("NG_TEMPORAL_CONNECT_TIMEOUT", "300"))
+        timeout = float(os.environ.get("NG_TEMPORAL_CONNECT_TIMEOUT", "100"))
         client = await _connect_with_retry(timeout)
         ng = nested_graph.build(x=1, y=2, z=3)
         engine = TemporalEngine(client=client, task_queue="ng-integration-temporal")

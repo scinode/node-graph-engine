@@ -78,18 +78,27 @@ services:
     environment:
       POSTGRES_USER: temporal
       POSTGRES_PASSWORD: temporal
+      POSTGRES_DB: temporal
     volumes:
-      - ./tests_integration/.temporal/postgres:/var/lib/postgresql/data
+      - temporal-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal -d temporal"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     profiles: ["integration"]
 
   temporal:
     image: temporalio/auto-setup:1.25.0
     depends_on:
-      - temporal-postgres
+      temporal-postgres:
+        condition: service_healthy
     environment:
       - DB=postgres12
+      - DB_PORT=5432
       - POSTGRES_USER=temporal
       - POSTGRES_PWD=temporal
+      - POSTGRES_DB=temporal
       - POSTGRES_SEEDS=temporal-postgres
     ports:
       - "7233:7233"
@@ -136,3 +145,4 @@ volumes:
   aiida-data:
   postgres-data:
   neo4j-data:
+  temporal-postgres-data:
