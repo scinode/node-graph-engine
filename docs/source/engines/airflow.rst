@@ -42,7 +42,7 @@ compose file shipped with the repository:
 
 .. code-block:: console
 
-   docker compose -f tests_integration/docker-compose.yml up -d airflow
+   docker compose -f docker-compose.yml --profile integration up -d airflow
    export AIRFLOW_HOME=$PWD/tests_integration/.airflow
 
 This still requires the Airflow extra installed in your Python environment so the

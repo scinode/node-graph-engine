@@ -34,7 +34,7 @@ Run the Prefect server in Docker and point your client at it:
 
 .. code-block:: console
 
-   docker compose -f tests_integration/docker-compose.yml up -d prefect
+   docker compose -f docker-compose.yml --profile integration up -d prefect
    export PREFECT_API_URL=http://localhost:4200/api
 
 You still need the Prefect extra installed locally so the engine can build flows.

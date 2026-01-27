@@ -31,7 +31,7 @@ Run the Dagster webserver in Docker and point the engine at the shared
 
 .. code-block:: console
 
-   docker compose -f tests_integration/docker-compose.yml up -d dagster
+   docker compose -f docker-compose.yml --profile integration up -d dagster
    export DAGSTER_HOME=$PWD/tests_integration/.dagster
 
 You still need the Dagster extra installed locally so the engine can build jobs.

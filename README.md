@@ -85,20 +85,20 @@ From the repository root:
 cd node-graph-engine
 ```
 
-Start only the service you need:
+Start only the service you need (integration profile):
 
 ```console
 # Airflow
-docker compose -f tests_integration/docker-compose.yml up -d airflow
+docker compose -f docker-compose.yml --profile integration up -d airflow
 
 # Prefect
-docker compose -f tests_integration/docker-compose.yml up -d prefect
+docker compose -f docker-compose.yml --profile integration up -d prefect
 
 # Dagster
-docker compose -f tests_integration/docker-compose.yml up -d dagster
+docker compose -f docker-compose.yml --profile integration up -d dagster
 
 # Temporal (includes postgres)
-docker compose -f tests_integration/docker-compose.yml up -d temporal
+docker compose -f docker-compose.yml --profile integration up -d temporal
 ```
 
 Then set the matching environment variables before running your engine code:
