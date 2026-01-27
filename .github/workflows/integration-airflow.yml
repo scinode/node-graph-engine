@@ -57,6 +57,11 @@ jobs:
             exit 1
           fi
 
+      - name: Install Airflow container deps
+        run: |
+          docker exec node-graph-engine-airflow-1 pip install -e /opt/project --no-deps
+          docker exec node-graph-engine-airflow-1 pip install "aiida-core~=2.7" "aiida-pythonjob~=0.5.1"
+
       - name: Run integration tests
         run: |
           export NG_AIRFLOW_INTEGRATION=1

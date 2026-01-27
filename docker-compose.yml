@@ -115,6 +115,7 @@ services:
       AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "5"
     volumes:
       - ${AIRFLOW_HOME:-./tests_integration/.airflow}:/opt/airflow
+      - .:/opt/project
     ports:
       - "8080:8080"
     command: airflow standalone
