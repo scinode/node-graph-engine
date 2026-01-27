@@ -36,12 +36,17 @@ jobs:
 
       - name: Start services
         run: |
-          export AIRFLOW_HOME="/opt/airflow"
-          export AIRFLOW_UID="$(id -u)"
-          export AIRFLOW_GID="0"
-          sudo mkdir -p "$AIRFLOW_HOME/dags"
-          sudo chmod -R 777 "$AIRFLOW_HOME"
-          docker compose -f docker-compose.yml --profile integration up -d airflow
+          export AIRFLOW_HOME="${{ runner.temp }}/airflow"
+          export AIRFLOW__CORE__DAGS_FOLDER="$AIRFLOW_HOME/dags"
+          export AIRFLOW__CORE__LOAD_EXAMPLES="False"
+          export AIRFLOW__CORE__EXECUTOR="SequentialExecutor"
+          export AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL="5"
+          export AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL="5"
+          mkdir -p "$AIRFLOW_HOME/dags"
+          airflow db migrate
+          nohup airflow api-server --port 8080 >"$AIRFLOW_HOME/api-server.log" 2>&1 &
+          nohup airflow scheduler >"$AIRFLOW_HOME/scheduler.log" 2>&1 &
+          nohup airflow dag-processor >"$AIRFLOW_HOME/dag-processor.log" 2>&1 &
 
       - name: Wait for services
         run: |
@@ -53,33 +58,86 @@ jobs:
           curl -fsS http://localhost:8080/api/v2/monitor/health >/dev/null 2>&1 && ready=1 || true
           if [ "$ready" -ne 1 ]; then
             echo "Airflow did not become ready in time."
-            docker compose -f tests_integration/docker-compose.yml logs airflow || true
+            tail -n 200 "${{ runner.temp }}/airflow/api-server.log" || true
+            tail -n 200 "${{ runner.temp }}/airflow/scheduler.log" || true
+            tail -n 200 "${{ runner.temp }}/airflow/dag-processor.log" || true
             exit 1
           fi
-
-      - name: Install Airflow container deps
-        run: |
-          docker exec node-graph-engine-airflow-1 pip install -e /opt/project --no-deps
-          docker exec node-graph-engine-airflow-1 pip install "aiida-core~=2.7" "aiida-pythonjob~=0.5.1"
 
       - name: Run integration tests
         run: |
           export NG_AIRFLOW_INTEGRATION=1
-          export AIRFLOW_HOME="/opt/airflow"
+          export AIRFLOW_HOME="${{ runner.temp }}/airflow"
           export AIRFLOW__CORE__DAGS_FOLDER="$AIRFLOW_HOME/dags"
-          export NG_AIRFLOW_RESULT_TIMEOUT=100
-          pytest tests_integration/test_engine_airflow_integration.py -s -vv --maxfail=1 --timeout=100
+          export NG_AIRFLOW_RESULT_TIMEOUT=150
+          pytest tests_integration/test_engine_airflow_integration.py -s -vv --maxfail=1 --timeout=150
 
       - name: Dump Airflow state
         if: failure()
         run: |
-          docker exec node-graph-engine-airflow-1 airflow dags list || true
-          docker exec node-graph-engine-airflow-1 airflow dags list-runs --dag-id ng_integration_airflow || true
-          docker exec node-graph-engine-airflow-1 airflow tasks list --dag-id ng_integration_airflow || true
-          docker exec node-graph-engine-airflow-1 ls -l /opt/airflow/dags || true
-          docker compose -f docker-compose.yml --profile integration logs airflow || true
-          docker exec node-graph-engine-airflow-1 airflow dags list-import-errors
+          export AIRFLOW_HOME="${{ runner.temp }}/airflow"
+          export AIRFLOW__CORE__DAGS_FOLDER="$AIRFLOW_HOME/dags"
+          airflow dags list || true
+          airflow dags list-import-errors || true
+          ls -l "$AIRFLOW_HOME/dags" || true
+          dag_id="$(ls -1 "$AIRFLOW_HOME/dags"/ng_integration_airflow__*.py 2>/dev/null | head -n1 | sed -n 's#.*/\\(ng_integration_airflow__[^.]*\\)\\.py#\\1#p')"
+          if [ -n "$dag_id" ]; then
+            airflow dags list-runs "$dag_id" || true
+            run_id="$(airflow dags list-runs "$dag_id" -o plain 2>/dev/null | awk 'NR==2 {print $1}')"
+            airflow tasks list "$dag_id" || true
+            if [ -n "$run_id" ]; then
+              airflow tasks log "$dag_id" finalize_task "$run_id" || true
+            fi
+            ls -l "$AIRFLOW_HOME/ng_subgraph_runs/$dag_id" || true
+          fi
+          python - <<'PY'
+          import os
+          import sqlite3
+          from pathlib import Path
+
+          airflow_home = Path(os.environ.get("AIRFLOW_HOME", ""))
+          db_path = airflow_home / "airflow.db"
+          if not db_path.exists():
+              print(f"airflow.db not found at {db_path}")
+              raise SystemExit(0)
+
+          conn = sqlite3.connect(str(db_path))
+          cur = conn.cursor()
+          try:
+              def cols(table):
+                  return [row[1] for row in cur.execute(f"PRAGMA table_info({table})").fetchall()]
+
+              dag_run_cols = cols("dag_run")
+              print("dag_run columns:", dag_run_cols)
+              dag_run_select = ["dag_id", "run_id", "state"]
+              for candidate in ("run_type", "logical_date", "run_after", "start_date", "end_date"):
+                  if candidate in dag_run_cols:
+                      dag_run_select.append(candidate)
+              if dag_run_select:
+                  query = f"SELECT {', '.join(dag_run_select)} FROM dag_run ORDER BY rowid DESC LIMIT 10"
+                  print("dag_run rows:")
+                  for row in cur.execute(query):
+                      print(row)
+
+              ti_cols = cols("task_instance")
+              print("task_instance columns:", ti_cols)
+              ti_select = ["dag_id", "task_id", "run_id", "state"]
+              if "try_number" in ti_cols:
+                  ti_select.append("try_number")
+              query = f"SELECT {', '.join(ti_select)} FROM task_instance ORDER BY rowid DESC LIMIT 20"
+              print("task_instance rows:")
+              for row in cur.execute(query):
+                  print(row)
+          finally:
+              conn.close()
+          PY
+          tail -n 200 "$AIRFLOW_HOME/api-server.log" || true
+          tail -n 200 "$AIRFLOW_HOME/scheduler.log" || true
+          tail -n 200 "$AIRFLOW_HOME/dag-processor.log" || true
 
       - name: Tear down services
         if: always()
-        run: docker compose -f docker-compose.yml --profile integration down -v
+        run: |
+          pkill -f "airflow api-server" || true
+          pkill -f "airflow scheduler" || true
+          pkill -f "airflow dag-processor" || true

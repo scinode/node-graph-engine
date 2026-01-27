@@ -33,8 +33,16 @@ jobs:
       - name: Set up AiiDA profile
         run: verdi presto
 
+      - name: Install Temporal CLI
+        run: |
+          curl -fsSL https://temporal.download/cli.sh | sh
+          echo "$HOME/.temporalio/bin" >> "$GITHUB_PATH"
+
       - name: Start services
-        run: docker compose -f docker-compose.yml --profile integration up -d temporal
+        run: |
+          export TEMPORAL_HOME="${{ runner.temp }}/temporal"
+          mkdir -p "$TEMPORAL_HOME"
+          nohup temporal server start-dev --ip 0.0.0.0 --port 7233 --db-filename "$TEMPORAL_HOME/temporal.db" --headless >"$TEMPORAL_HOME/temporal.log" 2>&1 &
 
       - name: Wait for services
         run: |
@@ -46,9 +54,7 @@ jobs:
           nc -z localhost 7233 >/dev/null 2>&1 && ready=1 || true
           if [ "$ready" -ne 1 ]; then
             echo "Temporal did not become ready in time."
-            docker compose -f docker-compose.yml --profile integration ps || true
-            docker compose -f docker-compose.yml --profile integration logs temporal || true
-            docker compose -f docker-compose.yml --profile integration logs temporal-postgres || true
+            tail -n 200 "${{ runner.temp }}/temporal/temporal.log" || true
             exit 1
           fi
 
@@ -59,4 +65,5 @@ jobs:
 
       - name: Tear down services
         if: always()
-        run: docker compose -f docker-compose.yml --profile integration down -v
+        run: |
+          pkill -f "temporal server start-dev" || true

@@ -34,7 +34,10 @@ jobs:
         run: verdi presto
 
       - name: Start services
-        run: docker compose -f docker-compose.yml --profile integration up -d prefect
+        run: |
+          export PREFECT_HOME="${{ runner.temp }}/prefect"
+          mkdir -p "$PREFECT_HOME"
+          nohup prefect server start --host 0.0.0.0 --port 4200 >"$PREFECT_HOME/server.log" 2>&1 &
 
       - name: Wait for services
         run: |
@@ -46,7 +49,7 @@ jobs:
           curl -fsS http://localhost:4200/api/health >/dev/null 2>&1 && ready=1 || true
           if [ "$ready" -ne 1 ]; then
             echo "Prefect did not become ready in time."
-            docker compose -f tests_integration/docker-compose.yml logs prefect || true
+            tail -n 200 "${{ runner.temp }}/prefect/server.log" || true
             exit 1
           fi
 
@@ -57,4 +60,5 @@ jobs:
 
       - name: Tear down services
         if: always()
-        run: docker compose -f docker-compose.yml --profile integration down -v
+        run: |
+          pkill -f "prefect server start" || true

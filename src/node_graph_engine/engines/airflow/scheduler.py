@@ -197,6 +197,7 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> Tuple[DAG, bool]
         if (
             "Direct database access via the ORM is not allowed" in message
             or "no such table: dag" in message
+            or "FOREIGN KEY constraint failed" in message
         ):
             logging.getLogger(__name__).warning(
                 "Skipping DAG persistence for '%s' due to Airflow execution-time DB "

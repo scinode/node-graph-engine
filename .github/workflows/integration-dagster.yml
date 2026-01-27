@@ -28,13 +28,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e . --no-deps
           pip install "aiida-core~=2.7" "aiida-pythonjob~=0.5.1" "pytest~=7.0" "pytest-cov~=2.7"
-          pip install "dagster~=1.7"
+          pip install "dagster~=1.7" "dagster-webserver~=1.7"
 
       - name: Set up AiiDA profile
         run: verdi presto
 
       - name: Start services
-        run: docker compose -f docker-compose.yml --profile integration up -d dagster
+        run: |
+          export DAGSTER_HOME="${{ github.workspace }}/tests_integration/.dagster"
+          mkdir -p "$DAGSTER_HOME"
+          nohup python -m dagster_webserver -h 0.0.0.0 -p 3000 -w tests_integration/dagster_workspace.yaml >"$DAGSTER_HOME/webserver.log" 2>&1 &
 
       - name: Wait for services
         run: |
@@ -46,7 +49,7 @@ jobs:
           curl -fsS http://localhost:3000 >/dev/null 2>&1 && ready=1 || true
           if [ "$ready" -ne 1 ]; then
             echo "Dagster did not become ready in time."
-            docker compose -f tests_integration/docker-compose.yml logs dagster || true
+            tail -n 200 "${{ github.workspace }}/tests_integration/.dagster/webserver.log" || true
             exit 1
           fi
 
@@ -58,4 +61,5 @@ jobs:
 
       - name: Tear down services
         if: always()
-        run: docker compose -f docker-compose.yml --profile integration down -v
+        run: |
+          pkill -f "dagster-webserver" || true
