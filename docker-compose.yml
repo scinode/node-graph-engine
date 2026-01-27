@@ -111,6 +111,8 @@ services:
       AIRFLOW__CORE__EXECUTOR: SequentialExecutor
       AIRFLOW__CORE__LOAD_EXAMPLES: "False"
       AIRFLOW_HOME: /opt/airflow
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "5"
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "5"
     volumes:
       - ${AIRFLOW_HOME:-./tests_integration/.airflow}:/opt/airflow
     ports:

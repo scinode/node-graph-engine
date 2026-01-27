@@ -21,6 +21,8 @@ def test_airflow_engine_integration(nested_graph) -> None:
 
     ng = nested_graph.build(x=1, y=2, z=3)
     engine = AirflowEngine(dag_id="ng-integration-airflow")
+    # engine.run(ng)
+    # engine.submit(ng)
     result = engine.submit(ng, force_trigger=True, wait=True)
     if result is None:
         pytest.fail("Airflow did not return results for the scheduled run.")
