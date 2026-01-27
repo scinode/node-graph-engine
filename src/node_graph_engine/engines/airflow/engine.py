@@ -38,6 +38,7 @@ from .runtime import (
 )
 from .scheduler import (
     _build_scheduler_payload,
+    _metadata_db_ready,
     _trigger_registered_dag,
     _poll_for_result,
     _poll_for_scheduled_result,
@@ -685,6 +686,13 @@ class AirflowEngine(BaseEngine):
         dag_path = paths.dags_dir / f"{dag_id}.py"
         os.environ.setdefault("AIRFLOW_HOME", str(paths.airflow_home))
         os.environ.setdefault("AIRFLOW__CORE__DAGS_FOLDER", str(paths.dags_dir))
+
+        if force_trigger and not _metadata_db_ready():
+            logging.getLogger(__name__).warning(
+                "Airflow metadata DB not ready; falling back to scheduler discovery for DAG '%s'.",
+                dag_id,
+            )
+            force_trigger = False
 
         effective_start_date = self.start_date or (
             datetime.now(timezone.utc) - timedelta(minutes=1)

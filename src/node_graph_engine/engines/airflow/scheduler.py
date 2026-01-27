@@ -213,6 +213,30 @@ def _register_generated_dag(dag_id: str, dag_path, dags_dir) -> Tuple[DAG, bool]
     return dag_obj, persisted
 
 
+def _metadata_db_ready() -> bool:
+    """Return True if the Airflow metadata DB is initialized and reachable."""
+
+    try:
+        from airflow.utils.session import create_session
+        from sqlalchemy import text
+    except Exception:
+        return False
+
+    try:
+        with create_session() as session:
+            session.execute(text("SELECT 1 FROM dag LIMIT 1"))
+        return True
+    except Exception as exc:
+        message = str(exc)
+        if (
+            "Direct database access via the ORM is not allowed" in message
+            or "no such table" in message
+            or "does not exist" in message
+        ):
+            return False
+        return False
+
+
 def _prepare_run_artifacts(
     *, paths: SchedulerPaths, dag_id: str, run_id: str, parent_pid: Optional[str]
 ) -> SchedulerRunArtifacts:
