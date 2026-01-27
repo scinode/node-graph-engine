@@ -40,9 +40,9 @@ class BaseEngine(ABC):
     @staticmethod
     def _snapshot_builtins(ng: Graph) -> Dict[str, Dict[str, Any]]:
         return {
-            "graph_ctx": ng.ctx._collect_values(raw=False),
-            "graph_inputs": ng.inputs._collect_values(raw=False),
-            "graph_outputs": ng.outputs._collect_values(raw=False),
+            "graph_ctx": ng.ctx._collect_values(unwrap=False),
+            "graph_inputs": ng.inputs._collect_values(unwrap=False),
+            "graph_outputs": ng.outputs._collect_values(unwrap=False),
         }
 
     def _graph_flow_run_id(self, ng: Graph) -> str:
