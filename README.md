@@ -1,6 +1,10 @@
 # node-graph Engine
 [![PyPI version](https://badge.fury.io/py/node_graph_engine.svg)](https://badge.fury.io/py/node_graph_engine)
 [![CI](https://github.com/scinode/node-graph-engine/actions/workflows/ci.yaml/badge.svg)](https://github.com/scinode/node-graph-engine/actions/workflows/ci.yaml)
+[![Integration Airflow](https://github.com/scinode/node-graph-engine/actions/workflows/integration-airflow.yml/badge.svg)](https://github.com/scinode/node-graph-engine/actions/workflows/integration-airflow.yml)
+[![Integration Dagster](https://github.com/scinode/node-graph-engine/actions/workflows/integration-dagster.yml/badge.svg)](https://github.com/scinode/node-graph-engine/actions/workflows/integration-dagster.yml)
+[![Integration Prefect](https://github.com/scinode/node-graph-engine/actions/workflows/integration-prefect.yml/badge.svg)](https://github.com/scinode/node-graph-engine/actions/workflows/integration-prefect.yml)
+[![Integration Temporal](https://github.com/scinode/node-graph-engine/actions/workflows/integration-temporal.yml/badge.svg)](https://github.com/scinode/node-graph-engine/actions/workflows/integration-temporal.yml)
 [![codecov](https://codecov.io/gh/scinode/node-graph-engine/branch/main/graph/badge.svg)](https://codecov.io/gh/scinode/node-graph-engine)
 [![Docs status](https://readthedocs.org/projects/node-graph-engine/badge)](https://node-graph-engine.readthedocs.io/en/latest/)
 
