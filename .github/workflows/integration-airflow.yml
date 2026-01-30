@@ -47,6 +47,7 @@ jobs:
           nohup airflow api-server --port 8080 >"$AIRFLOW_HOME/api-server.log" 2>&1 &
           nohup airflow scheduler >"$AIRFLOW_HOME/scheduler.log" 2>&1 &
           nohup airflow dag-processor >"$AIRFLOW_HOME/dag-processor.log" 2>&1 &
+          nohup airflow triggerer >"$AIRFLOW_HOME/triggerer.log" 2>&1 &
 
       - name: Wait for services
         run: |
@@ -134,6 +135,7 @@ jobs:
           tail -n 200 "$AIRFLOW_HOME/api-server.log" || true
           tail -n 200 "$AIRFLOW_HOME/scheduler.log" || true
           tail -n 200 "$AIRFLOW_HOME/dag-processor.log" || true
+          tail -n 200 "$AIRFLOW_HOME/triggerer.log" || true
 
       - name: Tear down services
         if: always()
@@ -141,3 +143,4 @@ jobs:
           pkill -f "airflow api-server" || true
           pkill -f "airflow scheduler" || true
           pkill -f "airflow dag-processor" || true
+          pkill -f "airflow triggerer" || true
