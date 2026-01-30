@@ -43,3 +43,4 @@ Outline
    autogen/ontology_semantics
    tutorial/knowledge_graphs
    eos_workflow
+   development/integration_tests
